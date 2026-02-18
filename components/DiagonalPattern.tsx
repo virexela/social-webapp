@@ -14,7 +14,7 @@ export function DiagonalPattern({ opacity = 0.03, animated = true }: DiagonalPat
         initial={{ opacity: 0 }}
         animate={{ opacity }}
         transition={{ duration: 1, ease: "easeOut" }}
-        className="fixed inset-0 -z-10 pointer-events-none"
+        className="fixed inset-0 -z-10 pointer-events-none text-[var(--color-fg-primary)]"
         style={{
           backgroundImage: `repeating-linear-gradient(
             45deg,
@@ -30,7 +30,7 @@ export function DiagonalPattern({ opacity = 0.03, animated = true }: DiagonalPat
 
   return (
     <div
-      className="fixed inset-0 -z-10 pointer-events-none"
+      className="fixed inset-0 -z-10 pointer-events-none text-[var(--color-fg-primary)]"
       style={{
         opacity,
         backgroundImage: `repeating-linear-gradient(

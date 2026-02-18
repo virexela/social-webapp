@@ -1,13 +1,18 @@
 import { encodeEnvelope } from "@/lib/protocol/envelope";
 
 type SocketState = "idle" | "connecting" | "open" | "closed";
+type OpenWaiter = {
+  resolve: () => void;
+  reject: (error: Error) => void;
+};
 
 export class RelaySocket {
   private ws: WebSocket | null = null;
   private state: SocketState = "idle";
   private reconnectAttempt = 0;
   private reconnectTimer: number | null = null;
-  private openWaiters: Array<() => void> = [];
+  private allowReconnect = true;
+  private openWaiters: OpenWaiter[] = [];
   private frameListeners: Array<(frame: Uint8Array) => void> = [];
 
   constructor(
@@ -26,6 +31,7 @@ export class RelaySocket {
 
   connect() {
     if (this.state === "open" || this.state === "connecting") return;
+    this.allowReconnect = true;
     this.state = "connecting";
 
     this.ws = new WebSocket(this.url);
@@ -36,7 +42,7 @@ export class RelaySocket {
       this.reconnectAttempt = 0;
       const waiters = this.openWaiters;
       this.openWaiters = [];
-      for (const w of waiters) w();
+      for (const w of waiters) w.resolve();
     };
 
     this.ws.onmessage = (evt) => {
@@ -45,18 +51,23 @@ export class RelaySocket {
       for (const l of this.frameListeners) l(frame);
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (evt) => {
       this.state = "closed";
-      this.scheduleReconnect();
+      if (!this.allowReconnect && this.openWaiters.length > 0) {
+        const waiters = this.openWaiters;
+        this.openWaiters = [];
+        const message = evt.reason
+          ? `WebSocket closed before open: ${evt.reason}`
+          : `WebSocket closed before open (code ${evt.code})`;
+        for (const w of waiters) w.reject(new Error(message));
+      }
+      if (this.allowReconnect) {
+        this.scheduleReconnect();
+      }
     };
 
     this.ws.onerror = () => {
-      // Close triggers reconnect.
-      try {
-        this.ws?.close();
-      } catch {
-        // ignore
-      }
+      // Safari may emit transient error events; rely on onclose for reconnect.
     };
   }
 
@@ -69,25 +80,42 @@ export class RelaySocket {
         reject(new Error("WebSocket open timed out"));
       }, timeoutMs);
 
-      this.openWaiters.push(() => {
-        window.clearTimeout(timer);
-        resolve();
+      this.openWaiters.push({
+        resolve: () => {
+          window.clearTimeout(timer);
+          resolve();
+        },
+        reject: (error) => {
+          window.clearTimeout(timer);
+          reject(error);
+        },
       });
+      const currentWs = this.ws;
+      if (!currentWs) {
+        window.clearTimeout(timer);
+        reject(new Error("WebSocket initialization failed"));
+      }
     });
   }
 
   close() {
+    this.allowReconnect = false;
     if (this.reconnectTimer) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.openWaiters = [];
+    if (this.openWaiters.length > 0) {
+      const waiters = this.openWaiters;
+      this.openWaiters = [];
+      for (const w of waiters) w.reject(new Error("WebSocket closed"));
+    }
     this.state = "closed";
     this.ws?.close();
     this.ws = null;
   }
 
   private scheduleReconnect() {
+    if (!this.allowReconnect) return;
     if (this.reconnectTimer) return;
     const attempt = this.reconnectAttempt++;
     const delayMs = Math.min(30_000, 250 * 2 ** attempt);

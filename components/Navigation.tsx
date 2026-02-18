@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
 import { Home, Settings, UserPlus } from "lucide-react";
 import { Logo } from "./Logo";
+import { ThemeToggle } from "./ThemeToggle";
 import clsx from "clsx";
 
 export function Navigation() {
@@ -12,7 +13,7 @@ export function Navigation() {
 
   const links = [
     { href: "/", label: "Home", icon: Home },
-    { href: "/add", label: "New chat", icon: UserPlus },
+    { href: "/", label: "New chat", icon: UserPlus },
     { href: "/settings", label: "Settings", icon: Settings },
   ];
 
@@ -21,13 +22,13 @@ export function Navigation() {
       initial={{ y: -20, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
       transition={{ duration: 0.5 }}
-      className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-200"
+      className="fixed top-0 left-0 right-0 z-50 bg-white dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800"
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
           <Link href="/" className="flex items-center gap-3 group">
-            <Logo size={32} animated={false} />
+            <Logo size={64} animated={false} />
             <span className="text-xl font-medium tracking-tight transition-opacity group-hover:opacity-70">
               SOCIAL
             </span>
@@ -45,7 +46,9 @@ export function Navigation() {
                   href={link.href}
                   className={clsx(
                     "relative px-4 py-2 text-sm font-medium transition-colors flex items-center gap-2",
-                    isActive ? "text-black" : "text-gray-600 hover:text-black"
+                    isActive
+                      ? "text-black dark:text-white"
+                      : "text-gray-600 dark:text-gray-300 hover:text-black dark:hover:text-white"
                   )}
                 >
                   <Icon size={16} />
@@ -53,7 +56,7 @@ export function Navigation() {
                   {isActive && (
                     <motion.div
                       layoutId="activeTab"
-                      className="absolute bottom-0 left-0 right-0 h-0.5 bg-black"
+                      className="absolute bottom-0 left-0 right-0 h-0.5 bg-black dark:bg-white"
                       initial={false}
                       transition={{ type: "spring", stiffness: 380, damping: 30 }}
                     />
@@ -61,6 +64,10 @@ export function Navigation() {
                 </Link>
               );
             })}
+
+            <div className="ml-1">
+              <ThemeToggle />
+            </div>
           </div>
         </div>
       </div>

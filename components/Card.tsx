@@ -20,7 +20,7 @@ export const Card = forwardRef<HTMLDivElement, CardProps>(
         transition={{ duration: 0.4 }}
         whileHover={hover ? { y: -2, boxShadow: "0 8px 24px rgba(0, 0, 0, 0.12)" } : {}}
         className={clsx(
-          "bg-white border border-gray-200 p-6 transition-all",
+          "bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 p-6 transition-all min-w-0 shadow-none",
           className
         )}
         {...props}

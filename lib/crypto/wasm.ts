@@ -26,3 +26,8 @@ export async function loadSocialCryptoWasm(): Promise<SocialCryptoWasmExports> {
 
   return cached;
 }
+
+export function resetSocialCryptoWasmCache(): void {
+  cached = null;
+  initialized = false;
+}

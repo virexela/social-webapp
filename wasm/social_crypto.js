@@ -53,6 +53,19 @@ export function encrypt_message(connection_id, plaintext) {
 }
 
 /**
+ * @param {Uint8Array} recovery_key
+ * @returns {Uint8Array}
+ */
+export function export_backup(recovery_key) {
+    const ptr0 = passArray8ToWasm0(recovery_key, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.export_backup(ptr0, len0);
+    var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v2;
+}
+
+/**
  * @returns {Uint8Array}
  */
 export function export_identity_blob() {
@@ -83,6 +96,18 @@ export function get_active_mailbox_ids(connection_id) {
     var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
     return v2;
+}
+
+/**
+ * @param {Uint8Array} blob
+ * @param {Uint8Array} recovery_key
+ */
+export function import_backup(blob, recovery_key) {
+    const ptr0 = passArray8ToWasm0(blob, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(recovery_key, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    wasm.import_backup(ptr0, len0, ptr1, len1);
 }
 
 /**
@@ -304,11 +329,10 @@ function decodeText(ptr, len) {
 
 let WASM_VECTOR_LEN = 0;
 
-let _wasmModule, wasm;
+let wasmModule, wasm;
 function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
-    _wasmModule = module;
-    void _wasmModule;
+    wasmModule = module;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();
     return wasm;

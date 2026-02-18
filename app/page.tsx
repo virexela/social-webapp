@@ -1,237 +1,442 @@
 "use client";
 
-import Link from "next/link";
-import { motion } from "framer-motion";
-import { ArrowRight, Lock, Zap, Shield, MessageSquare } from "lucide-react";
-import { DiagonalPattern, Logo, Navigation, Button, Card, Container } from "@/components";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
+import { Search } from "lucide-react";
+
+import { ContactListItem } from "@/components/ContactListItem";
+import { ContactListSkeleton } from "@/components/ContactListSkeleton";
+import { SettingsMenu } from "@/components/SettingsMenu";
+import { AddContactButton } from "@/components/AddContactModal";
+import { getCrypto } from "@/lib/crypto";
+import {
+  persistIdentityToIndexedDb,
+  restoreIdentityFromIndexedDb,
+} from "@/lib/crypto/lifecycle";
+import { useSocialStore } from "@/lib/state/store";
+import { RelaySocket } from "@/lib/network/socket";
+import { getRelayWsUrlCandidates } from "@/lib/network/relayUrl";
+import { fetchCiphertextBlobs } from "@/lib/network/relayFetch";
+import { hexToBytes } from "@/lib/protocol/bytes";
+import { sha256 } from "@/lib/protocol/hash";
+import { bytesToBase64Url } from "@/lib/protocol/base64url";
 
 export default function Home() {
-  const features = [
-    {
-      icon: Lock,
-      title: "End-to-End Encrypted",
-      description: "Military-grade encryption running entirely in Rust/WASM for maximum security.",
-    },
-    {
-      icon: Zap,
-      title: "Zero Latency",
-      description: "Lightning-fast performance with optimized cryptographic operations.",
-    },
-    {
-      icon: Shield,
-      title: "Privacy First",
-      description: "Your data stays yours. No tracking, no analytics, no compromises.",
-    },
-    {
-      icon: MessageSquare,
-      title: "Seamless Communication",
-      description: "Beautiful, intuitive interface designed for effortless secure messaging.",
-    },
-  ];
+  const router = useRouter();
+  const [identityReady, setIdentityReady] = useState<boolean | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showSearchBar, setShowSearchBar] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
+  const touchStartYRef = useRef<number | null>(null);
+
+  const connections = useSocialStore((s) => s.connections);
+  const contacts = useSocialStore((s) => s.contacts);
+  const refreshConnectionsFromWasm = useSocialStore((s) => s.refreshConnectionsFromWasm);
+  const addMessage = useSocialStore((s) => s.addMessage);
+  const activatePendingContact = useSocialStore((s) => s.activatePendingContact);
+  const setNickname = useSocialStore((s) => s.setNickname);
+
+  const [connectionsLoading, setConnectionsLoading] = useState(false);
+
+  const socketRef = useRef<RelaySocket | null>(null);
+
+  const relayUrls = useMemo(() => getRelayWsUrlCandidates(), []);
+
+  function handleTouchStart(e: React.TouchEvent) {
+    touchStartYRef.current = e.touches[0]?.clientY ?? null;
+  }
+
+  function handleTouchMove(e: React.TouchEvent) {
+    const start = touchStartYRef.current;
+    if (start == null) return;
+    const delta = e.touches[0].clientY - start;
+    if (delta > 40) setShowSearchBar(true);
+    if (delta < -40) {
+      setShowSearchBar(false);
+      setSearchQuery(""); // Clear search when hiding
+    }
+  }
+
+  function handleTouchEnd() {
+    touchStartYRef.current = null;
+  }
+
+  const filteredContacts = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const allContacts = contacts.filter((c) => c.status !== "invite_expired");
+    if (!q) return allContacts;
+    return allContacts.filter((c) => c.nickname.toLowerCase().includes(q));
+  }, [contacts, searchQuery]);
+
+  function initials(name: string) {
+    const parts = name.split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return "?";
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+
+
+
+  useEffect(() => {
+    void (async () => {
+      let wasmLoaded = false;
+      try {
+        wasmLoaded = await getCrypto().is_identity_loaded();
+      } catch {
+        // ignore
+      }
+
+      if (wasmLoaded) {
+        setIdentityReady(true);
+        setConnectionsLoading(true);
+        try {
+          await refreshConnectionsFromWasm();
+        } finally {
+          setConnectionsLoading(false);
+        }
+        return;
+      }
+
+      const ok = await restoreIdentityFromIndexedDb();
+      setIdentityReady(ok);
+      if (ok) {
+        setConnectionsLoading(true);
+        try {
+          await refreshConnectionsFromWasm();
+        } finally {
+          setConnectionsLoading(false);
+        }
+      }
+    })();
+  }, [refreshConnectionsFromWasm]);
+
+  // Keep connections reasonably fresh so newly accepted invites show up.
+  useEffect(() => {
+    if (identityReady !== true) return;
+
+    let mounted = true;
+    const safeRefresh = async () => {
+      try {
+        await refreshConnectionsFromWasm();
+      } catch {
+        // ignore
+      }
+    };
+
+    const onFocus = () => {
+      if (!mounted) return;
+      void safeRefresh();
+    };
+
+    window.addEventListener("focus", onFocus);
+    const interval = window.setInterval(() => {
+      if (!mounted) return;
+      void safeRefresh();
+    }, 15000);
+
+    return () => {
+      mounted = false;
+      window.removeEventListener("focus", onFocus);
+      window.clearInterval(interval);
+    };
+  }, [identityReady, refreshConnectionsFromWasm]);
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (identityReady === false) {
+      router.replace("/login");
+    }
+  }, [identityReady, router]);
+
+  // Detect screen size for responsive behavior
+  useEffect(() => {
+    const checkIsDesktop = () => {
+      setIsDesktop(window.innerWidth >= 1024); // lg breakpoint
+    };
+
+    checkIsDesktop();
+    window.addEventListener('resize', checkIsDesktop);
+    return () => window.removeEventListener('resize', checkIsDesktop);
+  }, []);
+
+  // Global message polling to activate pending contacts
+  const pollAllConnections = useCallback(async () => {
+    if (!socketRef.current) return;
+    let ratchetAdvanced = false;
+
+    for (const connectionHex of connections) {
+      try {
+        const connectionIdBytes = hexToBytes(connectionHex);
+        const blobs = await fetchCiphertextBlobs(socketRef.current, connectionIdBytes, { timeoutMs: 800 });
+
+        for (const blob of blobs) {
+          try {
+            const digest = await sha256(blob);
+            const id = bytesToBase64Url(digest);
+            const plaintextBytes = await getCrypto().decrypt_message(blob);
+            const text = new TextDecoder().decode(plaintextBytes);
+
+            // Check if this is from a pending contact
+            const pendingContact = contacts.find(
+              (c) => c.status === "pending_outgoing" && c.connectionIdHex === connectionHex
+            );
+
+            if (pendingContact) {
+              // Activate the pending contact
+              activatePendingContact(connectionHex);
+              setNickname(connectionHex, pendingContact.nickname);
+            }
+
+            // Add the message to the store
+            addMessage({
+              id,
+              connectionId: connectionHex,
+              content: text,
+              timestamp: Date.now(),
+              isOwn: false,
+              status: "sent",
+            });
+            ratchetAdvanced = true;
+          } catch {
+            // ignore decrypt errors / malformed blobs
+          }
+        }
+      } catch {
+        // ignore fetch errors for individual connections
+      }
+    }
+    if (ratchetAdvanced) {
+      try {
+        await persistIdentityToIndexedDb();
+      } catch {
+        // ignore persistence failures
+      }
+    }
+  }, [connections, contacts, activatePendingContact, setNickname, addMessage]);
+
+  // Initialize socket and start global polling
+  useEffect(() => {
+    if (identityReady !== true) return;
+
+    let mounted = true;
+
+    const initSocket = async () => {
+      if (!mounted) return;
+
+      let socket: RelaySocket | null = null;
+      for (const relayUrl of relayUrls) {
+        socket = new RelaySocket(relayUrl);
+        try {
+          await socket.connectAndWaitOpen(5000);
+          socketRef.current = socket;
+          break;
+        } catch {
+          socket.close();
+          socket = null;
+        }
+      }
+
+      if (!socket || !socketRef.current) {
+        return;
+      }
+
+      try {
+        // Start polling all connections
+        const interval = window.setInterval(() => {
+          if (!mounted) return;
+          void pollAllConnections();
+        }, 3000);
+
+        return () => {
+          window.clearInterval(interval);
+          socket.close();
+          socketRef.current = null;
+        };
+      } catch {
+        // If socket fails, retry later
+        socket.close();
+        socketRef.current = null;
+      }
+    };
+
+    const cleanup = initSocket();
+
+    return () => {
+      mounted = false;
+      void cleanup?.then((fn) => fn?.());
+    };
+  }, [identityReady, relayUrls, pollAllConnections]);
+
+
+
+
+
+
+
+
+
+
+
+  // Show loading state while checking authentication
+  if (identityReady === null) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-[var(--color-bg)]">
+        <div className="text-[var(--color-fg-muted)]">Loading...</div>
+      </div>
+    );
+  }
+
+  // Redirect happening, show loading
+  if (identityReady === false) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-[var(--color-bg)]">
+        <div className="text-[var(--color-fg-muted)]">Redirecting to login...</div>
+      </div>
+    );
+  }
 
   return (
-    <>
-      <DiagonalPattern />
-      <Navigation />
-      
-      <main className="min-h-screen pt-16">
-        {/* Hero Section */}
-        <section className="relative py-20 sm:py-32">
-          <Container>
-            <div className="flex flex-col items-center text-center">
-              <motion.div
-                initial={{ scale: 0.8, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ duration: 0.6, ease: "easeOut" }}
-                className="mb-8"
-              >
-                <Logo size={120} animated={true} />
-              </motion.div>
-
-              <motion.h1
-                initial={{ y: 20, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                transition={{ duration: 0.6, delay: 0.2 }}
-                className="text-5xl sm:text-6xl lg:text-7xl font-medium tracking-tight mb-6 max-w-4xl"
-              >
-                Secure Communication.
-                <br />
-                <span className="text-gray-600">Swiss Design.</span>
-              </motion.h1>
-
-              <motion.p
-                initial={{ y: 20, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                transition={{ duration: 0.6, delay: 0.3 }}
-                className="text-lg sm:text-xl text-gray-600 mb-12 max-w-2xl"
-              >
-                End-to-end encrypted messaging platform with cryptographic operations
-                running entirely in Rust/WASM. Privacy meets performance.
-              </motion.p>
-
-              <motion.div
-                initial={{ y: 20, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                transition={{ duration: 0.6, delay: 0.4 }}
-                className="flex flex-col sm:flex-row gap-4"
-              >
-                <Link href="/login">
-                  <Button size="lg" className="group">
-                    Get Started
-                    <ArrowRight
-                      size={20}
-                      className="transition-transform group-hover:translate-x-1"
-                    />
-                  </Button>
-                </Link>
-                <Link href="/chat">
-                  <Button variant="secondary" size="lg">
-                    View Demo
-                  </Button>
-                </Link>
-              </motion.div>
+    <div 
+      className="h-screen flex bg-[var(--color-bg)]"
+      {...(!isDesktop && {
+        onTouchStart: handleTouchStart,
+        onTouchMove: handleTouchMove,
+        onTouchEnd: handleTouchEnd
+      })}
+    >
+      {/* Contacts Sidebar */}
+      <div className="w-full lg:w-80 xl:w-96 flex flex-col border-r border-[var(--color-border)]">
+        {/* Header */}
+        <div className="px-6 py-5 border-b border-[var(--color-border)] bg-[var(--color-bg)]">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="!text-lg lg:!text-xl font-bold text-[var(--color-fg-primary)]">Contacts</h1>
             </div>
-          </Container>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowSearchBar(!showSearchBar)}
+                className="hidden lg:flex p-2 hover:bg-[var(--color-bg-secondary)] rounded-lg transition-colors"
+                aria-label="Toggle search"
+              >
+                <Search size={18} className="text-[var(--color-fg-muted)]" />
+              </button>
+              <SettingsMenu />
+            </div>
+          </div>
 
-          {/* Decorative Lines */}
-          <motion.div
-            initial={{ scaleX: 0 }}
-            animate={{ scaleX: 1 }}
-            transition={{ duration: 1, delay: 0.6 }}
-            className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-black to-transparent"
-          />
-        </section>
+          {/* Search Bar */}
+          <AnimatePresence>
+            {showSearchBar && (
+              <motion.div 
+                key="search-bar"
+                className="mt-4"
+                initial={{ opacity: 0, scale: 0.95, y: -10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                transition={{ 
+                  duration: 0.3, 
+                  ease: [0.25, 0.46, 0.45, 0.94],
+                }}
+              >
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-fg-muted)]" size={16} />
+                  <input
+                    type="text"
+                    placeholder="Search contacts…"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-9 pr-4 py-2.5 text-sm rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-fg-primary)] placeholder:text-[var(--color-fg-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--color-fg-primary)] focus:border-transparent transition-all"
+                  />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
 
-        {/* Features Section */}
-        <section className="py-20 sm:py-32 bg-gray-50">
-          <Container>
-            <motion.div
-              initial={{ y: 20, opacity: 0 }}
-              whileInView={{ y: 0, opacity: 1 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.6 }}
-              className="text-center mb-16"
-            >
-              <h2 className="text-3xl sm:text-4xl font-medium tracking-tight mb-4">
-                Built for Security
-              </h2>
-              <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-                Every feature designed with privacy and performance in mind
-              </p>
-            </motion.div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 lg:gap-8">
-              {features.map((feature, index) => {
-                const Icon = feature.icon;
-                return (
-                  <motion.div
-                    key={feature.title}
-                    initial={{ y: 40, opacity: 0 }}
-                    whileInView={{ y: 0, opacity: 1 }}
-                    viewport={{ once: true }}
-                    transition={{ duration: 0.5, delay: index * 0.1 }}
-                  >
-                    <Card>
-                      <div className="flex items-start gap-4">
-                        <div className="flex-shrink-0 w-12 h-12 bg-black text-white flex items-center justify-center">
-                          <Icon size={24} />
-                        </div>
-                        <div>
-                          <h3 className="text-xl font-medium mb-2">{feature.title}</h3>
-                          <p className="text-gray-600">{feature.description}</p>
+        <div className="flex-1 overflow-hidden">
+          {connectionsLoading ? (
+            <ContactListSkeleton />
+          ) : filteredContacts.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center px-6 py-12">
+              <div className="text-center space-y-4 max-w-sm">
+                <div className="space-y-2">
+                  <h2 className="text-xl font-semibold text-[var(--color-fg-primary)]">No contacts yet</h2>
+                  <p className="text-sm text-[var(--color-fg-secondary)] leading-relaxed">
+                    Add your first contact to start secure conversations.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="divide-y divide-[var(--color-border)]">
+              {filteredContacts.map((contact) => {
+                if (contact.status === "pending_outgoing") {
+                  return (
+                    <div
+                      key={contact.id}
+                      className="w-full flex items-center gap-4 py-[var(--space-4)] px-[var(--space-6)] border-b border-[var(--color-border)] opacity-70 cursor-pointer"
+                      onClick={() => router.push(`/chat/${contact.connectionIdHex}`)}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="relative">
+                          <div className="w-12 h-12 rounded-full bg-[var(--color-border-strong)] flex items-center justify-center font-bold text-[var(--font-size-body)] text-[var(--color-fg-primary)]">
+                            {initials(contact.nickname)}
+                          </div>
+                          <div
+                            className="absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[var(--color-bg)] bg-[var(--color-border-strong)]"
+                            aria-hidden
+                          />
                         </div>
                       </div>
-                    </Card>
-                  </motion.div>
-                );
+
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[var(--font-size-body)] lg:text-sm font-bold uppercase text-[var(--color-fg-primary)] truncate">
+                          {contact.nickname}
+                        </div>
+                        <div className="text-[var(--font-size-meta)] lg:text-xs uppercase letter-spacing-[var(--letter-spacing-label)] text-[var(--color-fg-muted)] mt-1 truncate">
+                          Invite pending…
+                        </div>
+                      </div>
+                    </div>
+                  );
+                } else if (contact.status === "connected") {
+                  return (
+                    <ContactListItem
+                      key={contact.id}
+                      id={contact.connectionIdHex}
+                      name={contact.nickname}
+                      subtitle="Tap to chat"
+                      time={undefined}
+                      onClick={() => router.push(`/chat/${contact.connectionIdHex}`)}
+                    />
+                  );
+                }
+                return null;
               })}
             </div>
-          </Container>
-        </section>
+          )}
+        </div>
+      </div>
 
-        {/* Architecture Section */}
-        <section className="py-20 sm:py-32">
-          <Container size="md">
-            <motion.div
-              initial={{ y: 20, opacity: 0 }}
-              whileInView={{ y: 0, opacity: 1 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.6 }}
-            >
-              <Card hover={false} className="bg-black text-white border-black">
-                <div className="text-center py-8">
-                  <h2 className="text-3xl sm:text-4xl font-medium tracking-tight mb-6">
-                    Rust/WASM Architecture
-                  </h2>
-                  <p className="text-gray-300 text-lg mb-8 max-w-2xl mx-auto">
-                    JavaScript hosts the UI only. All cryptographic operations run in
-                    compiled Rust via WebAssembly for maximum security and performance.
-                  </p>
-                  <div className="flex flex-wrap justify-center gap-6 text-sm">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 bg-white rounded-full" />
-                      <span>Zero-copy data passing</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 bg-white rounded-full" />
-                      <span>Memory-safe operations</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 bg-white rounded-full" />
-                      <span>Native performance</span>
-                    </div>
-                  </div>
-                </div>
-              </Card>
-            </motion.div>
-          </Container>
-        </section>
-
-        {/* CTA Section */}
-        <section className="py-20 sm:py-32 bg-gray-50">
-          <Container size="md">
-            <motion.div
-              initial={{ y: 20, opacity: 0 }}
-              whileInView={{ y: 0, opacity: 1 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.6 }}
-              className="text-center"
-            >
-              <h2 className="text-3xl sm:text-4xl font-medium tracking-tight mb-6">
-                Ready to get started?
-              </h2>
-              <p className="text-lg text-gray-600 mb-8 max-w-xl mx-auto">
-                Experience secure communication with Swiss design precision
-              </p>
-              <Link href="/login">
-                <Button size="lg" className="group">
-                  Launch Application
-                  <ArrowRight
-                    size={20}
-                    className="transition-transform group-hover:translate-x-1"
-                  />
-                </Button>
-              </Link>
-            </motion.div>
-          </Container>
-        </section>
-
-        {/* Footer */}
-        <footer className="border-t border-gray-200 py-12">
-          <Container>
-            <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
-              <div className="flex items-center gap-2">
-                <Logo size={24} animated={false} />
-                <span className="font-medium">SOCIAL</span>
-              </div>
-              <p className="text-sm text-gray-600">
-                © 2026 SOCIAL. All rights reserved.
+      {/* Conversation Area */}
+      <div className="hidden lg:flex flex-1 flex-col bg-[var(--color-bg-secondary)]">
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="text-center space-y-4 max-w-md">
+            <div className="w-16 h-16 mx-auto bg-[var(--color-bg)] border border-[var(--color-border)] flex items-center justify-center">
+              <Search size={24} className="text-[var(--color-fg-muted)]" />
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-2xl font-semibold text-[var(--color-fg-primary)]">Select a conversation</h2>
+              <p className="text-sm text-[var(--color-fg-secondary)] leading-relaxed">
+                Choose a contact from the sidebar to start chatting securely.
               </p>
             </div>
-          </Container>
-        </footer>
-      </main>
-    </>
+          </div>
+        </div>
+      </div>
+
+      <AddContactButton variant="fab" />
+    </div>
   );
 }
-

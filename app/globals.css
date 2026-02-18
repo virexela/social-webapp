@@ -1,73 +1,120 @@
 @import "tailwindcss";
 
-/* Swiss Design System - Award-winning minimalist aesthetic */
+/* Use class-based dark mode so next-themes can toggle it */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻
+   SOCIAL Design Tokens — Swiss Minimal System
+   ⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻⸻ */
+
 :root {
-  /* Core Swiss palette - high contrast */
-  --black: #000000;
-  --white: #ffffff;
-  --gray-50: #fafafa;
-  --gray-100: #f5f5f5;
-  --gray-200: #e5e5e5;
-  --gray-300: #d4d4d4;
-  --gray-400: #a3a3a3;
-  --gray-500: #737373;
-  --gray-600: #525252;
-  --gray-700: #404040;
-  --gray-800: #262626;
-  --gray-900: #171717;
+  /* 1️⃣  COLOR TOKENS — Ultra-reduced palette */
+  /* Light mode: white background, black text */
+  --color-bg: #FFFFFF;
+  --color-fg-primary: #000000;
+  --color-fg-secondary: rgba(0, 0, 0, 0.6);
+  --color-fg-muted: rgba(0, 0, 0, 0.35);
   
-  /* Accent for interactive elements */
-  --accent: #0070f3;
-  --accent-hover: #0051cc;
+  --color-border: rgba(0, 0, 0, 0.15);
+  --color-border-strong: rgba(0, 0, 0, 0.35);
   
-  /* Semantic colors */
-  --success: #00d100;
-  --error: #ff0000;
-  --warning: #ff9500;
+  --color-interactive: #000000;
+  --color-interactive-inverse: #FFFFFF;
+
+  /* 2️⃣  TYPOGRAPHY TOKENS — Swiss modernist type scale */
+  --font-family-base: "Inter", "Helvetica Neue", sans-serif;
   
-  /* Diagonal pattern for brand identity */
-  --diagonal-angle: 45deg;
-  --pattern-spacing: 20px;
+  --font-size-hero: 40px;
+  --font-size-title: 22px;
+  --font-size-body: 16px;
+  --font-size-meta: 12px;
   
-  /* Grid system */
-  --grid-unit: 8px;
-  --container-max: 1200px;
+  --font-weight-regular: 400;
+  --font-weight-bold: 700;
   
-  /* Typography scaling (Swiss precision) */
-  --text-xs: 0.75rem;
-  --text-sm: 0.875rem;
-  --text-base: 1rem;
-  --text-lg: 1.125rem;
-  --text-xl: 1.25rem;
-  --text-2xl: 1.5rem;
-  --text-3xl: 1.875rem;
-  --text-4xl: 2.25rem;
-  --text-5xl: 3rem;
-  --text-6xl: 3.75rem;
+  --letter-spacing-label: 0.12em;
+  --letter-spacing-tight: -0.01em;
   
-  /* Transitions */
-  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  /* 3️⃣  SPACING TOKENS — 8pt Grid */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 96px;
+  
+  /* 4️⃣  LAYOUT GRID TOKENS */
+  --content-max-width: 720px;
+  --content-padding-x: var(--space-5);
+  --section-gap: var(--space-7);
+  
+  /* 5️⃣  BORDER & LINE TOKENS */
+  --border-thin: 1px solid var(--color-border);
+  --border-strong: 1px solid var(--color-border-strong);
+  --divider: 1px solid var(--color-border);
+  
+  /* 6️⃣  RADIUS TOKENS — No curves */
+  --radius-none: 0px;
+  
+  /* 7️⃣  BUTTON TOKENS */
+  --button-height: 44px;
+  --button-padding-x: var(--space-5);
+  --button-font-size: var(--font-size-body);
+  --button-border: var(--border-strong);
+  
+  /* 8️⃣  INPUT TOKENS */
+  --input-height: 44px;
+  --input-border: var(--border-thin);
+  --input-padding-x: 0px;
+  
+  /* 9️⃣  MESSAGE LAYOUT TOKENS */
+  --chat-max-width: 620px;
+  --message-gap: var(--space-4);
+  --message-padding-y: var(--space-1);
+  
+  /* 🔟  MOTION TOKENS — Linear only */
+  --transition-fast: 120ms linear;
+  --transition-base: 180ms linear;
+  --transition-slow: 260ms linear;
+  
+  /* Legacy aliases for compatibility */
+  --bg: var(--color-bg);
+  --fg: var(--color-fg-primary);
+  --muted-fg: var(--color-fg-muted);
+  --card-bg: var(--color-bg);
+  --card-border: var(--color-border);
+}
+
+.dark {
+  /* Dark mode: black background, white text */
+  --color-bg: #000000;
+  --color-fg-primary: #FFFFFF;
+  --color-fg-secondary: rgba(255, 255, 255, 0.6);
+  --color-fg-muted: rgba(255, 255, 255, 0.35);
+  
+  --color-border: rgba(255, 255, 255, 0.15);
+  --color-border-strong: rgba(255, 255, 255, 0.35);
+  
+  --color-interactive: #FFFFFF;
+  --color-interactive-inverse: #000000;
 }
 
 @theme inline {
-  --font-sans: var(--font-inter), system-ui, -apple-system, sans-serif;
+  --font-sans: var(--font-family-base), system-ui, -apple-system, sans-serif;
   
-  /* Tailwind color aliases */
-  --color-primary: var(--black);
-  --color-secondary: var(--gray-600);
-  --color-accent: var(--accent);
-  
-  /* Spacing system (8px grid) */
-  --spacing-1: var(--grid-unit);
-  --spacing-2: calc(var(--grid-unit) * 2);
-  --spacing-3: calc(var(--grid-unit) * 3);
-  --spacing-4: calc(var(--grid-unit) * 4);
-  --spacing-6: calc(var(--grid-unit) * 6);
-  --spacing-8: calc(var(--grid-unit) * 8);
-  --spacing-12: calc(var(--grid-unit) * 12);
-  --spacing-16: calc(var(--grid-unit) * 16);
+  /* Spacing system */
+  --spacing-1: var(--space-1);
+  --spacing-2: var(--space-2);
+  --spacing-3: var(--space-3);
+  --spacing-4: var(--space-4);
+  --spacing-5: var(--space-5);
+  --spacing-6: var(--space-6);
+  --spacing-7: var(--space-7);
+  --spacing-8: var(--space-8);
+  --spacing-9: var(--space-9);
 }
 
 * {
@@ -81,153 +128,207 @@ html {
 }
 
 body {
-  background: var(--white);
-  color: var(--black);
-  font-family: var(--font-inter), system-ui, -apple-system, sans-serif;
-  font-size: var(--text-base);
+  background: var(--color-bg);
+  color: var(--color-fg-primary);
+  font-family: var(--font-family-base), system-ui, -apple-system, sans-serif;
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-regular);
   line-height: 1.6;
   margin: 0;
   padding: 0;
   overflow-x: hidden;
 }
 
-/* Swiss Diagonal Pattern Background */
-.diagonal-pattern {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: -1;
-  pointer-events: none;
-  opacity: 0.03;
-  background-image: repeating-linear-gradient(
-    var(--diagonal-angle),
-    transparent,
-    transparent calc(var(--pattern-spacing) - 2px),
-    var(--black) calc(var(--pattern-spacing) - 2px),
-    var(--black) var(--pattern-spacing)
-  );
-}
-
-/* Typography hierarchy */
+/* Typography hierarchy — Swiss modernist scale */
 h1, h2, h3, h4, h5, h6 {
-  font-weight: 500;
-  letter-spacing: -0.02em;
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-tight);
   line-height: 1.2;
   margin: 0;
 }
 
-h1 { font-size: var(--text-5xl); }
-h2 { font-size: var(--text-4xl); }
-h3 { font-size: var(--text-3xl); }
-h4 { font-size: var(--text-2xl); }
-h5 { font-size: var(--text-xl); }
-h6 { font-size: var(--text-lg); }
+h1 {
+  font-size: var(--font-size-hero);
+  text-transform: uppercase;
+}
 
-/* Swiss button styles */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: calc(var(--grid-unit) * 1.5);
-  padding: calc(var(--grid-unit) * 1.5) calc(var(--grid-unit) * 3);
-  font-size: var(--text-sm);
-  font-weight: 500;
-  line-height: 1;
-  text-decoration: none;
-  border: none;
+h2 {
+  font-size: var(--font-size-title);
+  text-transform: uppercase;
+}
+
+h3 {
+  font-size: var(--font-size-title);
+}
+
+h4 {
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-bold);
+}
+
+h5, h6 {
+  font-size: var(--font-size-meta);
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-label);
+}
+
+p {
+  font-size: var(--font-size-body);
+  margin: 0;
+}
+
+.text-meta {
+  font-size: var(--font-size-meta);
+  color: var(--color-fg-muted);
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-label);
+}
+
+/* Button System — Swiss minimal */
+button {
+  font-family: inherit;
   border-radius: 0;
   cursor: pointer;
   transition: all var(--transition-base);
-  white-space: nowrap;
-  user-select: none;
 }
 
-.btn-primary {
-  background: var(--black);
-  color: var(--white);
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: var(--gray-800);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-
-.btn-secondary {
-  background: var(--white);
-  color: var(--black);
-  border: 1px solid var(--black);
-}
-
-.btn-secondary:hover:not(:disabled) {
-  background: var(--black);
-  color: var(--white);
-}
-
-.btn:disabled {
+button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-/* Card styles */
+/* Primary button: white background, black text */
+.btn-primary {
+  height: var(--button-height);
+  padding: 0 var(--button-padding-x);
+  font-size: var(--button-font-size);
+  font-weight: var(--font-weight-bold);
+  background: var(--color-fg-primary);
+  color: var(--color-bg);
+  border: var(--button-border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-bg);
+  color: var(--color-fg-primary);
+  border: var(--border-strong);
+}
+
+.btn-primary:active:not(:disabled) {
+  border: 2px solid var(--color-fg-primary);
+}
+
+/* Secondary button: transparent, white border */
+.btn-secondary {
+  height: var(--button-height);
+  padding: 0 var(--button-padding-x);
+  font-size: var(--button-font-size);
+  font-weight: var(--font-weight-bold);
+  background: transparent;
+  color: var(--color-fg-primary);
+  border: var(--border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--color-fg-primary);
+  color: var(--color-bg);
+}
+
+.btn-secondary:active:not(:disabled) {
+  border: 2px solid var(--color-fg-primary);
+}
+
+/* Card System — Swiss minimal (no shadows) */
 .card {
-  background: var(--white);
-  border: 1px solid var(--gray-200);
-  padding: calc(var(--grid-unit) * 4);
+  background: transparent;
+  border: var(--divider);
+  padding: var(--space-5);
   transition: all var(--transition-base);
 }
 
 .card:hover {
-  border-color: var(--black);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  border-color: var(--color-border-strong);
 }
 
-/* Input styles */
-.input {
-  width: 100%;
-  padding: calc(var(--grid-unit) * 1.5) calc(var(--grid-unit) * 2);
-  font-size: var(--text-base);
+/* Input System — Swiss minimal (underline or rectangle) */
+input,
+textarea,
+select {
   font-family: inherit;
-  background: var(--white);
-  border: 1px solid var(--gray-300);
+  font-size: var(--font-size-body);
   border-radius: 0;
-  outline: none;
   transition: all var(--transition-base);
 }
 
-.input:focus {
-  border-color: var(--black);
-  box-shadow: 0 0 0 1px var(--black);
+.input-base {
+  height: var(--input-height);
+  padding: var(--space-2) 0;
+  background: transparent;
+  border: none;
+  border-bottom: var(--input-border);
+  color: var(--color-fg-primary);
 }
 
-/* Selection styles */
+.input-base::placeholder {
+  color: var(--color-fg-muted);
+}
+
+.input-base:focus {
+  outline: none;
+  border-bottom: var(--border-strong);
+}
+
+.input-outline {
+  height: var(--input-height);
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: var(--input-border);
+  color: var(--color-fg-primary);
+}
+
+.input-outline::placeholder {
+  color: var(--color-fg-muted);
+}
+
+.input-outline:focus {
+  outline: none;
+  border: var(--border-strong);
+}
+
+/* Selection — High contrast */
 ::selection {
-  background: var(--black);
-  color: var(--white);
+  background: var(--color-fg-primary);
+  color: var(--color-bg);
 }
 
-/* Scrollbar styles */
+/* Scrollbar — Minimal */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--gray-100);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--gray-400);
+  background: var(--color-border-strong);
   border-radius: 0;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--gray-600);
+  background: var(--color-fg-secondary);
 }
 
-/* Animations */
+/* Animations — Linear only, no easing curves */
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -237,10 +338,19 @@ h6 { font-size: var(--text-lg); }
   }
 }
 
-@keyframes slideUp {
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes slideInUp {
   from {
     opacity: 0;
-    transform: translateY(20px);
+    transform: translateY(16px);
   }
   to {
     opacity: 1;
@@ -248,58 +358,47 @@ h6 { font-size: var(--text-lg); }
   }
 }
 
-@keyframes slideDown {
+@keyframes slideOutDown {
   from {
-    opacity: 0;
-    transform: translateY(-20px);
-  }
-  to {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-@keyframes scaleIn {
-  from {
-    opacity: 0;
-    transform: scale(0.95);
-  }
   to {
-    opacity: 1;
-    transform: scale(1);
+    opacity: 0;
+    transform: translateY(16px);
   }
 }
 
-/* Utility animations */
+/* Utility animation classes */
 .animate-fade-in {
-  animation: fadeIn var(--transition-slow) ease-out;
+  animation: fadeIn var(--transition-base);
 }
 
-.animate-slide-up {
-  animation: slideUp var(--transition-slow) ease-out;
+.animate-fade-out {
+  animation: fadeOut var(--transition-base);
 }
 
-.animate-slide-down {
-  animation: slideDown var(--transition-slow) ease-out;
+.animate-slide-in-up {
+  animation: slideInUp var(--transition-base);
 }
 
-.animate-scale-in {
-  animation: scaleIn var(--transition-slow) ease-out;
+.animate-slide-out-down {
+  animation: slideOutDown var(--transition-base);
 }
 
-/* Focus visible for accessibility */
+/* Focus visible — Accessibility */
 :focus-visible {
-  outline: 2px solid var(--black);
+  outline: 1px solid var(--color-fg-primary);
   outline-offset: 2px;
 }
 
-/* Link styles */
+/* Links */
 a {
   color: inherit;
   text-decoration: none;
-  transition: opacity var(--transition-fast);
+  transition: color var(--transition-fast);
 }
 
 a:hover {
-  opacity: 0.7;
+  color: var(--color-fg-secondary);
 }
