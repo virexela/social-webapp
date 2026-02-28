@@ -1,195 +1,198 @@
 "use client";
 
 import { create } from "zustand";
-import { getCrypto } from "@/lib/crypto";
-import { splitConnectionIds, toHex } from "@/lib/protocol/connections";
+import { createJSONStorage, persist } from "zustand/middleware";
 
 export type MessageStatus = "sending" | "sent" | "failed";
 
 export interface ChatMessage {
   id: string;
-  connectionId: string;
+  conversationKey: string;
   content: string;
   timestamp: number;
   isOwn: boolean;
+  kind?: "text" | "file";
+  fileName?: string;
+  mimeType?: string;
+  fileDataBase64?: string;
   status?: MessageStatus;
 }
 
-export type ContactStatus = "pending_outgoing" | "connected" | "invite_expired";
+export type ContactStatus = "online" | "offline" | "pending" | "invite_expired" | "connected";
+const STORE_PERSIST_KEY = "social_store_v1";
 
 export interface Contact {
-  id: string;
-  connectionIdHex: string;
   nickname: string;
   status: ContactStatus;
-  inviteCode?: string;
+  conversationKey: string;
+  roomId: string;
   createdAt: number;
+  messages?: ChatMessage[];
+  latestMessage?: ChatMessage;
+  unreadCount?: number;
+  lastOpenedAt?: number;
 }
 
 interface SocialState {
-  connections: string[];
   contacts: Contact[];
-  messagesByConnectionId: Record<string, ChatMessage[]>;
-  nicknamesByConnectionId: Record<string, string>;
-  selectedChatId: string | null;
+  selectedContactId: string | null;
 
-  setSelectedChatId: (id: string | null) => void;
-  setNickname: (connectionId: string, nickname: string) => void;
-  setNicknames: (nicknames: Record<string, string>) => void;
-  setConnections: (ids: string[]) => void;
-  addPendingOutgoingContact: (nickname: string, inviteCode: string, connectionIdHex: string) => void;
-  addConnectedContact: (nickname: string, connectionIdHex: string) => void;
-  activatePendingContact: (connectionIdHex: string) => void;
-  addMessage: (message: ChatMessage) => void;
-  setMessageStatus: (connectionIdHex: string, messageId: string, status: MessageStatus) => void;
-  clearAllData: () => void;
-  refreshConnectionsFromWasm: () => Promise<void>;
+  setSelectedContactId: (id: string | null) => void;
+  restoreRecoveredState: (
+    contacts: Contact[],
+  ) => void;
+  setContacts: (contacts: Contact[]) => void;
+  addContact: (nickname: string, conversationKey: string, roomId: string) => void;
+  removeContact: (roomId: string) => void;
+  activatePendingContact: (roomId: string) => void;
+  updateConversationKey: (oldKey: string, newKey: string) => void;
+  addMessage: (message: ChatMessage, conversationKey: string) => void;
+  replaceMessages: (conversationKey: string, messages: ChatMessage[]) => void;
+  setMessageStatus: (conversationKey: string, messageId: string, status: MessageStatus) => void;
+  removeMessage: (conversationKey: string, messageId: string) => void;
+  markContactOpened: (roomId: string) => void;
+  incrementUnread: (roomId: string) => void;
 }
 
-function fallbackNickname(connectionId: string): string {
-  return `Contact ${connectionId.slice(0, 6)}`;
-}
-
-function upsertContact(
-  contacts: Contact[],
-  next: Contact
-): Contact[] {
-  const idx = contacts.findIndex((c) => c.connectionIdHex === next.connectionIdHex);
-  if (idx === -1) return [...contacts, next];
-
-  const out = contacts.slice();
-  out[idx] = { ...out[idx], ...next };
-  return out;
-}
-
-// No secrets, no private keys, no ratchet state.
-export const useSocialStore = create<SocialState>((set) => ({
-  connections: [],
-  contacts: [],
-  messagesByConnectionId: {},
-  nicknamesByConnectionId: {},
-  selectedChatId: null,
-
-  setSelectedChatId: (id) => set({ selectedChatId: id }),
-  setNickname: (connectionId, nickname) =>
-    set((s) => ({
-      nicknamesByConnectionId: { ...s.nicknamesByConnectionId, [connectionId]: nickname },
-      contacts: s.contacts.map((c) =>
-        c.connectionIdHex === connectionId ? { ...c, nickname } : c
-      ),
-    })),
-  setNicknames: (nicknames) =>
-    set((s) => ({
-      nicknamesByConnectionId: nicknames,
-      contacts: s.contacts.map((c) => ({
-        ...c,
-        nickname: nicknames[c.connectionIdHex] ?? c.nickname,
-      })),
-    })),
-  setConnections: (ids) => set({ connections: ids }),
-  addPendingOutgoingContact: (nickname, inviteCode, connectionIdHex) =>
-    set((s) => ({
-      nicknamesByConnectionId: {
-        ...s.nicknamesByConnectionId,
-        [connectionIdHex]: nickname,
-      },
-      contacts: upsertContact(s.contacts, {
-        id: connectionIdHex,
-        connectionIdHex,
-        nickname,
-        status: "pending_outgoing",
-        inviteCode,
-        createdAt: Date.now(),
-      }),
-    })),
-  addConnectedContact: (nickname, connectionIdHex) =>
-    set((s) => ({
-      nicknamesByConnectionId: {
-        ...s.nicknamesByConnectionId,
-        [connectionIdHex]: nickname,
-      },
-      contacts: upsertContact(s.contacts, {
-        id: connectionIdHex,
-        connectionIdHex,
-        nickname,
-        status: "connected",
-        createdAt: Date.now(),
-      }),
-    })),
-  activatePendingContact: (connectionIdHex) =>
-    set((s) => ({
-      contacts: s.contacts.map((c) =>
-        c.connectionIdHex === connectionIdHex ? { ...c, status: "connected", inviteCode: undefined } : c
-      ),
-    })),
-  addMessage: (message) =>
-    set((s) => {
-      const current = s.messagesByConnectionId[message.connectionId] ?? [];
-      if (current.some((m) => m.id === message.id)) return s;
-
-      return {
-        messagesByConnectionId: {
-          ...s.messagesByConnectionId,
-          [message.connectionId]: [...current, message].sort((a, b) => a.timestamp - b.timestamp),
-        },
-      };
-    }),
-  setMessageStatus: (connectionIdHex, messageId, status) =>
-    set((s) => {
-      const current = s.messagesByConnectionId[connectionIdHex] ?? [];
-      if (current.length === 0) return s;
-
-      return {
-        messagesByConnectionId: {
-          ...s.messagesByConnectionId,
-          [connectionIdHex]: current.map((m) => (m.id === messageId ? { ...m, status } : m)),
-        },
-      };
-    }),
-  clearAllData: () =>
-    set({
-      connections: [],
+export const useSocialStore = create<SocialState>()(
+  persist(
+    (set) => ({
       contacts: [],
-      messagesByConnectionId: {},
-      nicknamesByConnectionId: {},
-      selectedChatId: null,
-    }),
-  refreshConnectionsFromWasm: async () => {
-    const crypto = getCrypto();
-    const raw = await crypto.list_connections();
-    const ids = splitConnectionIds(raw).map(toHex);
-    set((s) => {
-      const contactByConnection = new Map(s.contacts.map((c) => [c.connectionIdHex, c]));
+      selectedContactId: null,
 
-      const fromConnections: Contact[] = ids.map((connectionIdHex) => {
-        const existing = contactByConnection.get(connectionIdHex);
-        if (existing?.status === "pending_outgoing") {
+      setSelectedContactId: (id) => set({ selectedContactId: id }),
+      restoreRecoveredState: (recoveredContacts) =>
+        set((s) => ({
+          contacts: [...s.contacts, ...recoveredContacts],
+        })),
+      setContacts: (contacts) => set({ contacts }),
+
+      addContact: (nickname, conversationKey, roomId) =>
+        set((s) => {
+          const existing = s.contacts.find((c) => c.roomId === roomId);
+          if (existing) {
+            return {
+              contacts: s.contacts.map((c) =>
+                c.roomId === roomId
+                  ? {
+                      ...c,
+                      nickname: nickname || c.nickname,
+                      conversationKey: conversationKey || c.conversationKey,
+                    }
+                  : c
+              ),
+            };
+          }
+
           return {
-            ...existing,
-            nickname: s.nicknamesByConnectionId[connectionIdHex] ?? existing.nickname,
+            contacts: [
+              ...s.contacts,
+              {
+                nickname,
+                status: "pending",
+                conversationKey,
+                roomId,
+                createdAt: Date.now(),
+                unreadCount: 0,
+              },
+            ],
           };
-        }
+        }),
+      removeContact: (roomId) =>
+        set((s) => ({
+          contacts: s.contacts.filter((c) => c.roomId !== roomId),
+          selectedContactId: s.selectedContactId === roomId ? null : s.selectedContactId,
+        })),
+  updateConversationKey: (oldKey, newKey) =>
+        set((s) => ({
+          contacts: s.contacts.map((c) =>
+            c.conversationKey === oldKey ? { ...c, conversationKey: newKey } : c
+          ),
+        })),
 
-        return {
-          id: existing?.id ?? connectionIdHex,
-          connectionIdHex,
-          nickname:
-            s.nicknamesByConnectionId[connectionIdHex] ??
-            existing?.nickname ??
-            fallbackNickname(connectionIdHex),
-          status: existing?.status === "invite_expired" ? "invite_expired" : "connected",
-          createdAt: existing?.createdAt ?? Date.now(),
-        };
-      });
+      activatePendingContact: (roomId) =>
+        set((s) => ({
+          contacts: s.contacts.map((c) =>
+            c.roomId === roomId ? { ...c, status: "connected" } : c
+          ),
+        })),
 
-      const residual = s.contacts.filter(
-        (c) => c.status === "invite_expired" && !ids.includes(c.connectionIdHex)
-      );
+      addMessage: (message, conversationKey) =>
+        set((s) => {
+          const contacts = s.contacts.map((contact) => {
+            if (contact.conversationKey === conversationKey) {
+              const messages = contact.messages ? [...contact.messages, message] : [message];
+              return { ...contact, messages, latestMessage: message };
+            }
+            return contact;
+          });
+          return { contacts };
+        }),
 
-      return {
-        connections: ids,
-        contacts: [...fromConnections, ...residual],
-      };
-    });
-  },
-}));
+      replaceMessages: (conversationKey, messages) =>
+        set((s) => {
+          const contacts = s.contacts.map((contact) => {
+            if (contact.conversationKey === conversationKey) {
+              const sorted = [...messages].sort((a, b) => a.timestamp - b.timestamp);
+              const latestMessage = sorted.length > 0 ? sorted[sorted.length - 1] : contact.latestMessage;
+              return { ...contact, messages: sorted, latestMessage };
+            }
+            return contact;
+          });
+          return { contacts };
+        }),
+
+      setMessageStatus: (conversationKey, messageId, status) =>
+        set((s) => {
+          const contacts = s.contacts.map((contact) => {
+            if (contact.conversationKey === conversationKey) {
+              const messages = contact.messages?.map((message) => {
+                if (message.id === messageId) {
+                  return { ...message, status };
+                }
+                return message;
+              });
+              return { ...contact, messages };
+            }
+            return contact;
+          });
+          return { contacts };
+        }),
+
+      removeMessage: (conversationKey, messageId) =>
+        set((s) => {
+          const contacts = s.contacts.map((contact) => {
+            if (contact.conversationKey === conversationKey) {
+              const filtered = (contact.messages ?? []).filter((m) => m.id !== messageId);
+              const latestMessage = filtered.length > 0 ? filtered[filtered.length - 1] : undefined;
+              return { ...contact, messages: filtered, latestMessage };
+            }
+            return contact;
+          });
+          return { contacts };
+        }),
+
+      markContactOpened: (roomId) =>
+        set((s) => ({
+          contacts: s.contacts.map((c) =>
+            c.roomId === roomId ? { ...c, unreadCount: 0, lastOpenedAt: Date.now() } : c
+          ),
+        })),
+
+      incrementUnread: (roomId) =>
+        set((s) => ({
+          contacts: s.contacts.map((c) =>
+            c.roomId === roomId ? { ...c, unreadCount: (c.unreadCount ?? 0) + 1 } : c
+          ),
+        })),
+    }),
+    {
+      name: STORE_PERSIST_KEY,
+      storage: createJSONStorage(() => localStorage),
+      partialize: (state) => ({
+        contacts: state.contacts,
+        selectedContactId: state.selectedContactId,
+      }),
+    }
+  )
+);

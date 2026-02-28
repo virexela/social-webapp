@@ -21,7 +21,8 @@
     "zustand": "^5.0.3",
     "next-themes": "0.4.6",
     "qrcode.react": "4.2.0",
-    "@zxing/browser": "0.1.5"
+    "@zxing/browser": "0.1.5",
+    "mongodb": "^5.8.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

@@ -1,19 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState, Suspense } from "react";
+import { useMemo, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 
 import { Button, Input, Logo } from "@/components";
-import { getCrypto } from "@/lib/crypto";
-import { persistIdentityToIndexedDb, restoreIdentityFromIndexedDb } from "@/lib/crypto/lifecycle";
-import { storeIdentityBlob } from "@/lib/storage";
+import { registerUser } from "@/lib/action/user";
 import { hexToBytes } from "@/lib/protocol/bytes";
-import { downloadCloudBackup, uploadCloudBackup } from "@/lib/recovery/cloudBackup";
-import { useSocialStore } from "@/lib/state/store";
-import { getRelayWsUrl } from "@/lib/network/relayUrl";
-import { syncEncryptedStateBestEffort } from "@/lib/sync/stateSync";
-import { socialIdFromPublicBundle } from "@/lib/sync/socialId";
+import { createBackendKeyEnvelope, deriveRecoveryAuthHash } from "@/lib/protocol/recoveryVault";
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
@@ -30,14 +24,12 @@ function LoginPageContent() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>("");
 
-  const [hasLocalIdentity, setHasLocalIdentity] = useState<boolean | null>(null);
   const [recoveryKeyHex, setRecoveryKeyHex] = useState<string>("");
+  const [restoreSocialId, setRestoreSocialId] = useState<string>("");
   const [generatedRecoveryKeyHex, setGeneratedRecoveryKeyHex] = useState<string>("");
   const [generatedSocialId, setGeneratedSocialId] = useState<string>("");
   const [copied, setCopied] = useState(false);
-
-  const refreshConnectionsFromWasm = useSocialStore((s) => s.refreshConnectionsFromWasm);
-  const clearAllData = useSocialStore((s) => s.clearAllData);
+  const [downloaded, setDownloaded] = useState(false);
 
   const trimmedRecovery = recoveryKeyHex.trim();
 
@@ -50,89 +42,41 @@ function LoginPageContent() {
     }
   }, [trimmedRecovery]);
 
-  useEffect(() => {
-    void (async () => {
-      let wasmLoaded = false;
-      try {
-        wasmLoaded = await getCrypto().is_identity_loaded();
-      } catch {
-        // ignore
-      }
-      if (wasmLoaded) {
-        setHasLocalIdentity(true);
-        try {
-          await refreshConnectionsFromWasm();
-        } catch {
-          // ignore
-        }
-        return;
-      }
-      const ok = await restoreIdentityFromIndexedDb();
-      setHasLocalIdentity(ok);
-      if (ok) {
-        try {
-          await refreshConnectionsFromWasm();
-        } catch {
-          // ignore
-        }
-      }
-    })();
-  }, [refreshConnectionsFromWasm]);
-
-  // If we already have a local identity and we're not in the post-create recovery key view,
-  // prevent access to the /login page by redirecting to `next` (usually `/`).
-  useEffect(() => {
-    if (hasLocalIdentity === true && !generatedRecoveryKeyHex) {
-      router.replace(next);
+  function storeRecoveryCredentials(recoveryHex: string, socialId: string, opts?: { temporary?: boolean; expiresAt?: string }) {
+    localStorage.setItem("recovery_key", recoveryHex);
+    localStorage.setItem("social_id", socialId);
+    if (opts?.temporary) {
+      localStorage.setItem("account_type", "temporary");
+      localStorage.setItem("account_expires_at", opts.expiresAt ?? "");
+    } else {
+      localStorage.removeItem("account_type");
+      localStorage.removeItem("account_expires_at");
     }
-  }, [hasLocalIdentity, generatedRecoveryKeyHex, router, next]);
+  }
 
   async function createAccount() {
     setBusy(true);
     setError("");
 
     try {
-      const cryptoBridge = getCrypto();
       const recoveryKey = crypto.getRandomValues(new Uint8Array(32));
       const recoveryHex = bytesToHex(recoveryKey);
-      let identityBlob: Uint8Array;
-      try {
-        identityBlob = await cryptoBridge.init_user();
-      } catch (e) {
-        const msg = (e as Error).message || "";
-        if (!msg.toLowerCase().includes("unreachable")) {
-          throw e;
-        }
-        await cryptoBridge.reset_runtime();
-        try {
-          identityBlob = await cryptoBridge.init_user();
-        } catch {
-          throw new Error("Crypto runtime crashed. Reload the page and try creating the account again.");
-        }
+
+      const recoveryAuthHash = await deriveRecoveryAuthHash(recoveryHex);
+      const backendKeyEnvelope = await createBackendKeyEnvelope(recoveryHex);
+      const regRes = await registerUser({ recoveryAuthHash, backendKeyEnvelope });
+
+      if (!regRes.socialId) {
+        console.warn('registerUser failed:', regRes.error);
+        throw new Error(regRes.error || "Failed to register user");
       }
 
-      await storeIdentityBlob(identityBlob);
-      await persistIdentityToIndexedDb();
-      const publicBundle = await cryptoBridge.export_public_bundle();
-      setGeneratedSocialId(await socialIdFromPublicBundle(publicBundle));
+      const socialId = regRes.socialId;
+
+      setGeneratedSocialId(socialId);
       setGeneratedRecoveryKeyHex(recoveryHex);
+      storeRecoveryCredentials(recoveryHex, socialId);
 
-      // Clear all previous data when creating new account
-      clearAllData();
-
-      // Keep encrypted account state in relay storage for recovery.
-      try {
-        await uploadCloudBackup({
-          relayUrl: getRelayWsUrl(),
-          recoveryKey,
-        });
-      } catch {
-        // Do not block local account creation if relay backup is temporarily unavailable.
-      }
-
-      await syncEncryptedStateBestEffort([]);
-
-      setHasLocalIdentity(true);
     } catch (e) {
       setError((e as Error).message || "Failed to create account");
     } finally {
@@ -145,25 +89,49 @@ function LoginPageContent() {
     setError("");
 
     try {
+      const expectedSocialId = restoreSocialId.trim();
+      if (!expectedSocialId) {
+        throw new Error("Social ID is required to restore");
+      }
+
       const recoveryKey = hexToBytes(trimmedRecovery);
       if (recoveryKey.byteLength !== 32) {
         throw new Error("Recovery key must be 32 bytes (64 hex characters)");
       }
 
-      const { backupBlob } = await downloadCloudBackup({
-        relayUrl: getRelayWsUrl(),
-        recoveryKey,
-      });
+      storeRecoveryCredentials(trimmedRecovery, expectedSocialId);
 
-      const cryptoBridge = getCrypto();
-      await cryptoBridge.import_backup(backupBlob, recoveryKey);
-      await persistIdentityToIndexedDb();
-      await refreshConnectionsFromWasm();
-      await syncEncryptedStateBestEffort(useSocialStore.getState().contacts);
-      setHasLocalIdentity(true);
       router.replace(next);
     } catch (e) {
       setError((e as Error).message || "Recovery failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createTemporaryAccount() {
+    setBusy(true);
+    setError("");
+    try {
+      const recoveryKey = crypto.getRandomValues(new Uint8Array(32));
+      const recoveryHex = bytesToHex(recoveryKey);
+      const recoveryAuthHash = await deriveRecoveryAuthHash(recoveryHex);
+      const backendKeyEnvelope = await createBackendKeyEnvelope(recoveryHex);
+      const regRes = await registerUser({
+        recoveryAuthHash,
+        backendKeyEnvelope,
+        temporary: true,
+      });
+
+      if (!regRes.socialId) {
+        throw new Error(regRes.error || "Failed to create temporary account");
+      }
+
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      storeRecoveryCredentials(recoveryHex, regRes.socialId, { temporary: true, expiresAt });
+      router.replace(next);
+    } catch (e) {
+      setError((e as Error).message || "Failed to create temporary account");
     } finally {
       setBusy(false);
     }
@@ -173,34 +141,37 @@ function LoginPageContent() {
     router.replace(next);
   }
 
-  async function copyGeneratedKey() {
-    if (!generatedRecoveryKeyHex) return;
+  async function copyGeneratedKeys() {
+    if (!generatedRecoveryKeyHex || !generatedSocialId) return;
 
+    const content = `Social ID: ${generatedSocialId}\nRecovery Key: ${generatedRecoveryKeyHex}`;
     try {
-      await navigator.clipboard.writeText(generatedRecoveryKeyHex);
+      await navigator.clipboard.writeText(content);
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
     } catch (err) {
-      console.error('Failed to copy:', err);
-      // Fallback for older browsers or when clipboard API fails
-      try {
-        const textArea = document.createElement('textarea');
-        textArea.value = generatedRecoveryKeyHex;
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-999999px';
-        textArea.style.top = '-999999px';
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 2000);
-      } catch (fallbackErr) {
-        console.error('Fallback copy failed:', fallbackErr);
-        setError('Failed to copy recovery key. Please select and copy manually.');
-      }
+      console.error("Failed to copy to clipboard:", err);
+      setError("Failed to copy to clipboard");
     }
+
+    setTimeout(() => setCopied(false), 3000);
+  }
+
+  async function downloadGeneratedKey() {
+    if (!generatedRecoveryKeyHex || !generatedSocialId) return;
+
+    const content = `Social ID: ${generatedSocialId}\nRecovery Key: ${generatedRecoveryKeyHex}`;
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `social-recovery-${generatedSocialId}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setDownloaded(true);
+
+    setTimeout(() => setDownloaded(false), 3000);
   }
 
   return (
@@ -254,6 +225,16 @@ function LoginPageContent() {
                     {busy ? "Creating…" : "Create Account"}
                   </Button>
 
+                  <Button
+                    variant="secondary"
+                    onClick={() => void createTemporaryAccount()}
+                    disabled={busy}
+                    fullWidth
+                    className="h-12 text-base"
+                  >
+                    Temporary (24h)
+                  </Button>
+
                   <div className="relative">
                     <div className="absolute inset-0 flex items-center">
                       <div className="w-full border-t border-[var(--color-border)]"></div>
@@ -295,6 +276,16 @@ function LoginPageContent() {
                     autoCapitalize="none"
                     autoCorrect="off"
                   />
+                  <Input
+                    label="Social ID"
+                    placeholder="Your saved Social ID"
+                    value={restoreSocialId}
+                    onChange={(e) => setRestoreSocialId(e.target.value.trim())}
+                    variant="underline"
+                    spellCheck={false}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                  />
 
                   <div className="flex gap-3">
                     <Button
@@ -308,7 +299,7 @@ function LoginPageContent() {
                     <Button
                       variant="primary"
                       onClick={() => void restoreFromRecovery()}
-                      disabled={busy || !canRestore}
+                      disabled={busy || !canRestore || !restoreSocialId.trim()}
                       loading={busy}
                       fullWidth
                       className="h-11"
@@ -340,14 +331,24 @@ function LoginPageContent() {
               <div className="p-6 bg-[var(--color-bg)] border-2 border-[var(--color-border)] text-sm text-[var(--color-fg-primary)] font-mono break-all leading-relaxed">
                 {generatedRecoveryKeyHex}
               </div>
-              <Button
+              <div className="flex flex-justify gap-2"> 
+                <Button
                 variant="secondary"
-                onClick={() => void copyGeneratedKey()}
+                onClick={() => void copyGeneratedKeys()}
                 fullWidth
                 className="h-11"
               >
-                {copied ? "Copied ✓" : "Copy Key"}
+                {copied ? "Copied ✓" : "Copy"}
               </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => void downloadGeneratedKey()}
+                  fullWidth
+                  className="h-11"
+                >
+                  {downloaded ? "Done ✓" : "Download"}
+                </Button></div>
+
             </div>
 
             <Button

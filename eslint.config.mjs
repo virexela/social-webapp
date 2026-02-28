@@ -7,9 +7,6 @@ const eslintConfig = defineConfig([
   ...nextTs,
   {
     files: ["**/*.test.ts", "jest.config.cjs"],
-    rules: {
-      "@typescript-eslint/no-require-imports": "off",
-    },
   },
   // Override default ignores of eslint-config-next.
   globalIgnores([
@@ -18,7 +15,6 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
-    "wasm/*.js",
   ]),
 ]);
 

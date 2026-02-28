@@ -5,12 +5,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Copy, Check, X, Plus, QrCode } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
 import { BrowserQRCodeReader, IScannerControls } from "@zxing/browser";
-import { getCrypto } from "@/lib/crypto";
-import { splitConnectionIds, toHex } from "@/lib/protocol/connections";
+import { toHex } from "@/lib/protocol/connections";
 import { base64UrlToBytes, bytesToBase64Url } from "@/lib/protocol/base64url";
 import { useSocialStore } from "@/lib/state/store";
-import { persistIdentityToIndexedDb } from "@/lib/crypto/lifecycle";
-import { syncEncryptedStateBestEffort } from "@/lib/sync/stateSync";
+import { joinInviteRoom } from "@/lib/utils/socket";
+import { joinRoomMembership } from "@/lib/action/rooms";
+import { saveContactToDB } from "@/lib/action/contacts";
 
 interface AddContactModalProps {
   open: boolean;
@@ -19,69 +19,111 @@ interface AddContactModalProps {
 }
 
 type Step = "mode-select" | "send-invite" | "accept-invite";
+const DEFAULT_INVITE_LIMIT = 2;
+const MAX_INVITE_LIMIT = 50;
+
+function normalizeInviteLimit(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_INVITE_LIMIT;
+  return Math.max(DEFAULT_INVITE_LIMIT, Math.min(MAX_INVITE_LIMIT, parsed));
+}
 
 export function AddContactModal({ open, onClose, initialStep }: AddContactModalProps) {
   const [step, setStep] = useState<Step>(initialStep ?? "mode-select");
   const [busy, setBusy] = useState(false);
-  const [inviteUrl, setInviteUrl] = useState<string>("");
-  const [newConnectionHex, setNewConnectionHex] = useState<string>("");
-  const [sendContactName, setSendContactName] = useState<string>("");
+  const [inviteString, setInviteString] = useState<string>("");
+  const [roomId, setRoomId] = useState<string>("");
+  // `conversationKey` will hold the 16‑byte connection id once an invite has
+  // been created/accepted.  We don't need to keep the invite itself after
+  // generating the shareable string.
+  const [conversationKey, setConversationKey] = useState<Uint8Array>(new Uint8Array());
+  const [pastedInvite, setPastedInvite] = useState<string>("");
+  const [contactName, setContactName] = useState<string>("");
+  const [inviteLimit, setInviteLimit] = useState<string>(String(DEFAULT_INVITE_LIMIT));
   const [copied, setCopied] = useState(false);
   const [showQR, setShowQR] = useState(false);
-  const [pastedInvite, setPastedInvite] = useState<string>("");
-  const [acceptError, setAcceptError] = useState<string>("");
+  const [error, setError] = useState<string>("");
   const [scanningQR, setScanningQR] = useState(false);
-  const [scanError, setScanError] = useState<string>("");
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const scanControlsRef = useRef<IScannerControls | null>(null);
+  const inviteSocketRef = useRef<WebSocket | null>(null);
+  const inviteAcceptedRoomsRef = useRef<Set<string>>(new Set());
 
-  const setSelectedChatId = useSocialStore((s) => s.setSelectedChatId);
-  const refreshConnectionsFromWasm = useSocialStore((s) => s.refreshConnectionsFromWasm);
-  const addPendingOutgoingContact = useSocialStore((s) => s.addPendingOutgoingContact);
-  const addConnectedContact = useSocialStore((s) => s.addConnectedContact);
+  // selected contact id is managed elsewhere; not needed here
+  const addContact = useSocialStore((s) => s.addContact);
+  const activatePendingContact = useSocialStore((s) => s.activatePendingContact);
+
+  // we no longer track a per-user identifier; room membership is anonymous
+
+  const closeInviteSocket = useCallback(() => {
+    const socket = inviteSocketRef.current;
+    if (!socket) return;
+    inviteSocketRef.current = null;
+    socket.close(1000, "invite-closed");
+  }, []);
+
+  const startInviteListener = useCallback(
+    (targetRoomId: string, limit: number) => {
+      closeInviteSocket();
+      const socket = joinInviteRoom(targetRoomId, {
+        onInviteAccepted: () => {
+          inviteAcceptedRoomsRef.current.add(targetRoomId);
+          activatePendingContact(targetRoomId);
+        },
+      }, { limit, creator: true });
+      inviteSocketRef.current = socket;
+    },
+    [activatePendingContact, closeInviteSocket]
+  );
+
+
+  const startSendInvite = useCallback(async () => {
+    setBusy(true);
+
+    try {
+      const nextLimit = normalizeInviteLimit(inviteLimit);
+      const nextRoomId = crypto.randomUUID();
+      // this simplified app uses a 16‑byte random connection identifier
+      const connId = crypto.getRandomValues(new Uint8Array(16));
+
+      const invite = generateInviteString(nextRoomId, connId, nextLimit);
+      setInviteString(invite);
+      setRoomId(nextRoomId);
+      setConversationKey(connId);
+      setInviteLimit(String(nextLimit));
+      startInviteListener(nextRoomId, nextLimit);
+
+      setStep("send-invite");
+      setBusy(false);
+    } catch (e) {
+      setError((e as Error)?.message || "Failed to create invite");
+      setBusy(false);
+    }
+  }, [inviteLimit, startInviteListener]);
 
   useEffect(() => {
     if (!open) {
       setStep("mode-select");
-      setInviteUrl("");
-      setNewConnectionHex("");
-      setSendContactName("");
+      setInviteString("");
+      setRoomId("");
+      setConversationKey(new Uint8Array());
+      setContactName("");
+      setInviteLimit(String(DEFAULT_INVITE_LIMIT));
+      setPastedInvite("");
       setCopied(false);
       setShowQR(false);
-      setPastedInvite("");
-      setAcceptError("");
+      setError("");
       setScanningQR(false);
-      setScanError("");
     } else {
+      
+      if (initialStep === "send-invite") {
+        startSendInvite();
+      }
       // If open and an initial step is provided, go directly there
       setStep(initialStep ?? "mode-select");
     }
-  }, [open, initialStep]);
-
-  // Auto-process pasted invite
-  useEffect(() => {
-    if (step === "accept-invite" && pastedInvite.trim() && !busy && !acceptError) {
-      // Check if it looks like a valid invite
-      const trimmed = pastedInvite.trim();
-      if (trimmed.includes("?i=") || /^[A-Za-z0-9_-]+$/.test(trimmed)) {
-        // Auto-accept after a short delay to allow user to see what they pasted
-        const timeout = setTimeout(() => {
-          acceptInvite();
-        }, 500);
-        return () => clearTimeout(timeout);
-      }
-    }
-  }, [pastedInvite, step, busy, acceptError]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Auto-generate invite when opening directly on send-invite
-  useEffect(() => {
-    if (!open) return;
-    if (step !== "send-invite") return;
-    if (busy) return;
-    if (inviteUrl) return;
-    void startSendInvite();
-  }, [open, step, busy, inviteUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, initialStep, startSendInvite]);
 
   const stopQrScan = useCallback(() => {
     scanControlsRef.current?.stop();
@@ -90,8 +132,7 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
   }, []);
 
   const startQrScan = useCallback(async () => {
-    setAcceptError("");
-    setScanError("");
+    setError("");
     setScanningQR(true);
 
     try {
@@ -105,7 +146,7 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
         const text = result.getText();
         setPastedInvite(text);
         setScanningQR(false);
-        setScanError("");
+        setError("");
         controlsFromCb.stop();
         scanControlsRef.current = null;
       });
@@ -113,7 +154,7 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
       // Keep controls so we can stop scanning if user cancels/closes
       scanControlsRef.current = controls;
     } catch (e) {
-      setScanError((e as Error)?.message || "Unable to access camera");
+      setError((e as Error)?.message || "Unable to access camera");
       setScanningQR(false);
       scanControlsRef.current = null;
     }
@@ -132,66 +173,66 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
     };
   }, [open, step, scanningQR]);
 
+  useEffect(() => {
+    return () => {
+      closeInviteSocket();
+    };
+  }, [closeInviteSocket]);
+
   function reset() {
     setStep("mode-select");
-    setInviteUrl("");
-    setNewConnectionHex("");
-    setSendContactName("");
+    setInviteString("");
+    setContactName("");
+    setInviteLimit(String(DEFAULT_INVITE_LIMIT));
     setCopied(false);
     setShowQR(false);
     setPastedInvite("");
-    setAcceptError("");
+    setError("");
     setScanningQR(false);
-    setScanError("");
   }
 
-  async function startSendInvite() {
-    setBusy(true);
-    try {
-      const crypto = getCrypto();
-      const beforeRaw = await crypto.list_connections();
-      const before = new Set(splitConnectionIds(beforeRaw).map(toHex));
-
-      const inviteBytes = await crypto.create_invite();
-      const token = bytesToBase64Url(inviteBytes);
-      setInviteUrl(token); // Store just the token/code, not the full URL
-
-      const afterRaw = await crypto.list_connections();
-      const after = splitConnectionIds(afterRaw).map(toHex);
-      const created = after.find((id) => !before.has(id)) ?? "";
-      setNewConnectionHex(created);
-
-      // Persist inviter-side connection state immediately so reloads do not
-      // lose the ratchet/connection before the invite is accepted.
-      await persistIdentityToIndexedDb();
-
-      setStep("send-invite");
-      await refreshConnectionsFromWasm();
-    } finally {
-      setBusy(false);
-    }
+  function generateInviteString(roomId: string, inviteBytes: Uint8Array, limit: number): string {
+    // encode as "roomId:hex(invite):limit" so the receiver can parse all parts
+    const text = `${roomId}:${toHex(inviteBytes)}:${limit}`;
+    return bytesToBase64Url(new TextEncoder().encode(text));
   }
+
 
   async function copyLink() {
-    if (!inviteUrl) return;
+    if (!inviteString) return;
     try {
-      await navigator.clipboard.writeText(inviteUrl);
+      await navigator.clipboard.writeText(inviteString);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1200);
-    } catch {
-      // ignore
+    } catch (e) {
+      console.error("Failed to copy invite URL:", e);
     }
   }
 
   function onDone() {
-    const name = sendContactName.trim();
+    const name = contactName.trim();
     if (!name) return;
 
-    if (step === "send-invite" && newConnectionHex && inviteUrl) {
-      // inviteUrl now contains just the token, not a full URL
-      addPendingOutgoingContact(name, inviteUrl, newConnectionHex);
-      setSelectedChatId(newConnectionHex);
-      void syncEncryptedStateBestEffort(useSocialStore.getState().contacts);
+    if (step === "send-invite" && inviteString) {
+      // conversationKey already holds our 16‑byte connection id
+      addContact(name, toHex(conversationKey), roomId);
+      const socialId = localStorage.getItem("social_id");
+      if (socialId) {
+        const contact = useSocialStore.getState().contacts.find((c) => c.roomId === roomId);
+        if (contact) {
+          void saveContactToDB(socialId, contact);
+        }
+        void joinRoomMembership(socialId, roomId);
+      }
+      if (inviteAcceptedRoomsRef.current.has(roomId)) {
+        activatePendingContact(roomId);
+        if (socialId) {
+          const contact = useSocialStore.getState().contacts.find((c) => c.roomId === roomId);
+          if (contact) {
+            void saveContactToDB(socialId, { ...contact, status: "connected" });
+          }
+        }
+      }
     }
 
     reset();
@@ -200,46 +241,70 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
 
   const acceptInvite = useCallback(async () => {
     if (!pastedInvite.trim()) {
-      setAcceptError("Paste an invite code");
+      setError("Paste an invite code");
       return;
     }
 
-    setAcceptError("");
+    setError("");
     setBusy(true);
 
     try {
-      const token = pastedInvite.includes("?i=")
-        ? pastedInvite.split("?i=")[1]!
-        : pastedInvite.trim();
+      const inviteBytes = base64UrlToBytes(pastedInvite.trim());
+      const inviteText = new TextDecoder().decode(inviteBytes);
+      const [roomId, inviteHex, rawLimit] = inviteText.split(":");
+      if (!roomId || !inviteHex) throw new Error("Invalid invite format");
+      const parsedLimit = normalizeInviteLimit(rawLimit ?? String(DEFAULT_INVITE_LIMIT));
 
-      const inviteBytes = base64UrlToBytes(token);
-      const crypto = getCrypto();
-      const connectionId = await crypto.accept_invite(inviteBytes);
-      const connectionHex = Array.from(connectionId)
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
-
-      const name = window.prompt("What should you call this contact?");
-      if (!name) {
-        setBusy(false);
-        return;
+      if (!/^[0-9a-fA-F]+$/.test(inviteHex) || inviteHex.length % 2 !== 0) {
+        throw new Error("Invalid invite data");
       }
 
-      addConnectedContact(name, connectionHex);
-      setSelectedChatId(connectionHex);
+      const parsedInvite = new Uint8Array(
+        inviteHex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []
+      );
+      // Connection ids are 16 bytes in this app.
+      if (parsedInvite.length !== 16) throw new Error("Invalid invite data");
 
-      await persistIdentityToIndexedDb();
-      await refreshConnectionsFromWasm();
-      await syncEncryptedStateBestEffort(useSocialStore.getState().contacts);
+      // the invite itself is the connection id
+      const connectionId = parsedInvite;
+
+      const name = contactName.trim();
+      if (!name) return;
+
+      addContact(name, toHex(connectionId), roomId);
+      const socialId = localStorage.getItem("social_id");
+      if (socialId) {
+        const contact = useSocialStore.getState().contacts.find((c) => c.roomId === roomId);
+        if (contact) {
+          void saveContactToDB(socialId, contact);
+        }
+        void joinRoomMembership(socialId, roomId);
+      }
+      activatePendingContact(roomId);
+      if (socialId) {
+        const contact = useSocialStore.getState().contacts.find((c) => c.roomId === roomId);
+        if (contact) {
+          void saveContactToDB(socialId, { ...contact, status: "connected" });
+        }
+      }
+
+      const acceptSocket = joinInviteRoom(roomId, {
+        onError: () => setError("Unable to notify invite room"),
+      }, { limit: parsedLimit });
+      acceptSocket.addEventListener("open", () => {
+        window.setTimeout(() => {
+          acceptSocket.close(1000, "invite-accepted");
+        }, 200);
+      });
 
       reset();
       onClose();
     } catch (e) {
-      setAcceptError((e as Error).message || "Invalid invite");
+      setError((e as Error).message || "Invalid invite");
     } finally {
       setBusy(false);
     }
-  }, [addConnectedContact, pastedInvite, setSelectedChatId, refreshConnectionsFromWasm, onClose]);
+  }, [addContact, contactName, pastedInvite, onClose, activatePendingContact]);
 
   return (
     <AnimatePresence>
@@ -280,7 +345,7 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
                 <div className="space-y-3">
                   <button
                     type="button"
-                    onClick={() => void startSendInvite()}
+                    onClick={startSendInvite}
                     disabled={busy}
                     className="w-full border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 px-4 py-3 text-left font-medium transition-colors disabled:opacity-50"
                   >
@@ -297,27 +362,53 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
               ) : step === "send-invite" ? (
                 <div className="space-y-4">
                   <div className="text-sm text-gray-600 dark:text-gray-400">
-                    Share this invite code privately or as QR.
+                    Share this invite code privately or as QR. Only the configured number of participants can join.
                   </div>
 
                   <div className="space-y-1">
                     <label className="text-sm text-gray-700 dark:text-gray-300">
-                      Contact name
+                      Contact / Group name
                     </label>
                     <input
-                      value={sendContactName}
-                      onChange={(e) => setSendContactName(e.target.value)}
-                      placeholder="Enter contact name"
+                      value={contactName}
+                      onChange={(e) => setContactName(e.target.value)}
+                      placeholder="Enter name"
                       className="w-full border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 px-3 py-2 text-sm text-black dark:text-white"
                     />
                   </div>
+
+                  <div className="space-y-1">
+                    <label className="text-sm text-gray-700 dark:text-gray-300">
+                      Invite limit
+                    </label>
+                    <input
+                      type="number"
+                      min={DEFAULT_INVITE_LIMIT}
+                      max={MAX_INVITE_LIMIT}
+                      value={inviteLimit}
+                      onChange={(e) => setInviteLimit(e.target.value)}
+                      className="w-full border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 px-3 py-2 text-sm text-black dark:text-white"
+                    />
+                    <div className="text-xs text-gray-500 dark:text-gray-400">
+                      Default is {DEFAULT_INVITE_LIMIT}. Includes you.
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => void startSendInvite()}
+                    disabled={busy}
+                    className="w-full border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50"
+                  >
+                    Regenerate invite with limit
+                  </button>
 
                   {!showQR ? (
                     <div className="space-y-3">
                       <div className="flex gap-2">
                         <input
                           readOnly
-                          value={inviteUrl}
+                          value={inviteString}
                           className="flex-1 border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 px-3 py-2 text-sm text-gray-600 dark:text-gray-400"
                         />
                         <button
@@ -340,8 +431,8 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
                   ) : (
                     <div className="space-y-3">
                       <div className="flex justify-center bg-gray-50 dark:bg-gray-950 p-4">
-                        {inviteUrl && (
-                          <QRCodeCanvas value={inviteUrl} size={200} includeMargin={false} />
+                        {inviteString && (
+                          <QRCodeCanvas value={inviteString} size={200} includeMargin={false} />
                         )}
                       </div>
                       <button
@@ -357,7 +448,7 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
                   <button
                     type="button"
                     onClick={onDone}
-                    disabled={!sendContactName.trim()}
+                    disabled={!contactName.trim()}
                     className="w-full bg-black dark:bg-white text-white dark:text-black px-4 py-2 text-sm font-medium hover:opacity-90 transition-opacity"
                   >
                     Done
@@ -365,19 +456,25 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
                 </div>
               ) : (
                 <div className="space-y-4">
+                  <div className="space-y-1">
+                    <label className="text-sm text-gray-700 dark:text-gray-300">
+                      Contact name
+                    </label>
+                    <input
+                      value={contactName}
+                      onChange={(e) => setContactName(e.target.value)}
+                      placeholder="Enter contact name"
+                      className="w-full border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 px-3 py-2 text-sm text-black dark:text-white"
+                    />
+                  </div>
+
                   <div className="text-sm text-gray-600 dark:text-gray-400">
                     Paste the invite code (auto-accepts) or scan a QR code.
                   </div>
 
-                  {acceptError && (
+                  {error && (
                     <div className="text-sm text-red-600 bg-red-50 dark:bg-red-950 px-3 py-2">
-                      {acceptError}
-                    </div>
-                  )}
-
-                  {scanError && (
-                    <div className="text-sm text-blue-600 bg-blue-50 dark:bg-blue-950 px-3 py-2">
-                      {scanError}
+                      {error}
                     </div>
                   )}
 
@@ -399,16 +496,25 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
                         Stop scanning
                       </button>
                     </div>
-                  )}
+                    )}
 
-                  <textarea
+                    <textarea
                     value={pastedInvite}
                     onChange={(e) => setPastedInvite(e.target.value)}
                     placeholder="Paste invite code here..."
                     className="w-full border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 px-3 py-2 text-sm text-black dark:text-white resize-none"
                     rows={3}
                     autoFocus
-                  />
+                    />
+
+                    <button
+                    type="button"
+                    onClick={() => void acceptInvite()}
+                    disabled={!pastedInvite.trim() || busy}
+                    className="w-full bg-black dark:bg-white text-white dark:text-black px-4 py-2 text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+                    >
+                    Accept
+                    </button>
 
                   <button
                     type="button"

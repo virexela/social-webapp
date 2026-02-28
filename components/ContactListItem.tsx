@@ -12,6 +12,9 @@ interface ContactListItemProps {
   time?: string;
   online?: boolean;
   onClick?: () => void;
+  onDelete?: () => void;
+  enableSwipeDelete?: boolean;
+  unreadCount?: number;
 }
 
 function initials(name: string) {
@@ -21,12 +24,30 @@ function initials(name: string) {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-export function ContactListItem({ id, name, subtitle, time, online = false, onClick }: ContactListItemProps) {
+export function ContactListItem({
+  id,
+  name,
+  subtitle,
+  time,
+  online = false,
+  onClick,
+  onDelete,
+  enableSwipeDelete = false,
+  unreadCount = 0,
+}: ContactListItemProps) {
   return (
     <motion.button
       data-contact-id={id}
       onClick={onClick}
       whileHover={{ x: 4 }}
+      drag={enableSwipeDelete ? "x" : false}
+      dragConstraints={{ left: -120, right: 0 }}
+      dragElastic={0.1}
+      onDragEnd={(_e, info) => {
+        if (enableSwipeDelete && info.offset.x < -90 && onDelete) {
+          onDelete();
+        }
+      }}
       className={clsx(
         "w-full flex items-center gap-4 py-[var(--space-4)] px-[var(--space-6)]",
         "border-b border-[var(--color-border)]",
@@ -49,7 +70,14 @@ export function ContactListItem({ id, name, subtitle, time, online = false, onCl
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-4">
           <div className="text-[var(--font-size-body)] lg:text-sm font-bold uppercase text-[var(--color-fg-primary)] truncate">{name}</div>
-          {time && <div className="text-[var(--font-size-meta)] lg:text-xs text-[var(--color-fg-muted)] uppercase">{time}</div>}
+          <div className="flex items-center gap-2">
+            {unreadCount > 0 ? (
+              <div className="min-w-5 h-5 px-1 rounded-full bg-[var(--color-fg-primary)] text-[var(--color-bg)] text-[10px] flex items-center justify-center">
+                {unreadCount}
+              </div>
+            ) : null}
+            {time && <div className="text-[var(--font-size-meta)] lg:text-xs text-[var(--color-fg-muted)] uppercase">{time}</div>}
+          </div>
         </div>
         {subtitle && <div className="text-[var(--font-size-meta)] lg:text-xs uppercase letter-spacing-[var(--letter-spacing-label)] text-[var(--color-fg-muted)] mt-1 truncate">{subtitle}</div>}
       </div>

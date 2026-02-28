@@ -1,4 +1,3 @@
-import { encodeEnvelope } from "@/lib/protocol/envelope";
 
 type SocketState = "idle" | "connecting" | "open" | "closed";
 type OpenWaiter = {
@@ -13,19 +12,19 @@ export class RelaySocket {
   private reconnectTimer: number | null = null;
   private allowReconnect = true;
   private openWaiters: OpenWaiter[] = [];
-  private frameListeners: Array<(frame: Uint8Array) => void> = [];
+  private msgListeners: Array<(msg: unknown) => void> = [];
 
   constructor(
     private readonly url: string,
-    onFrame?: (frame: Uint8Array) => void
+    onMessage?: (msg: unknown) => void
   ) {
-    if (onFrame) this.frameListeners.push(onFrame);
+    if (onMessage) this.msgListeners.push(onMessage);
   }
 
-  addFrameListener(listener: (frame: Uint8Array) => void): () => void {
-    this.frameListeners.push(listener);
+  addMessageListener(listener: (msg: unknown) => void): () => void {
+    this.msgListeners.push(listener);
     return () => {
-      this.frameListeners = this.frameListeners.filter((l) => l !== listener);
+      this.msgListeners = this.msgListeners.filter((l) => l !== listener);
     };
   }
 
@@ -35,7 +34,6 @@ export class RelaySocket {
     this.state = "connecting";
 
     this.ws = new WebSocket(this.url);
-    this.ws.binaryType = "arraybuffer";
 
     this.ws.onopen = () => {
       this.state = "open";
@@ -46,9 +44,15 @@ export class RelaySocket {
     };
 
     this.ws.onmessage = (evt) => {
-      if (!(evt.data instanceof ArrayBuffer)) return;
-      const frame = new Uint8Array(evt.data);
-      for (const l of this.frameListeners) l(frame);
+      let payload: unknown = evt.data;
+      if (typeof evt.data === "string") {
+        try {
+          payload = JSON.parse(evt.data);
+        } catch {
+          payload = evt.data;
+        }
+      }
+      for (const l of this.msgListeners) l(payload);
     };
 
     this.ws.onclose = (evt) => {
@@ -125,37 +129,15 @@ export class RelaySocket {
     }, delayMs);
   }
 
-  private sendFrame(frame: Uint8Array) {
+  private sendText(text: string) {
     if (!this.ws || this.state !== "open") {
       throw new Error("WebSocket not connected");
     }
-    this.ws.send(frame);
+    this.ws.send(text);
   }
 
-  // Binary frames only. JS does not parse payload semantics.
-  sendPutMessage(mailboxId: Uint8Array, blob: Uint8Array) {
-    const payload = new Uint8Array(mailboxId.byteLength + blob.byteLength);
-    payload.set(mailboxId, 0);
-    payload.set(blob, mailboxId.byteLength);
-    this.sendFrame(encodeEnvelope({ opcode: 1, payload }));
-  }
-
-  fetchMessages(mailboxId: Uint8Array) {
-    this.sendFrame(encodeEnvelope({ opcode: 2, payload: mailboxId }));
-  }
-
-  deleteMessages(mailboxId: Uint8Array, ids: Uint8Array[]) {
-    const total = ids.reduce((sum, id) => sum + 4 + id.byteLength, 0);
-    const payload = new Uint8Array(mailboxId.byteLength + total);
-    payload.set(mailboxId, 0);
-    const view = new DataView(payload.buffer);
-    let offset = mailboxId.byteLength;
-    for (const id of ids) {
-      view.setUint32(offset, id.byteLength, true);
-      offset += 4;
-      payload.set(id, offset);
-      offset += id.byteLength;
-    }
-    this.sendFrame(encodeEnvelope({ opcode: 3, payload }));
+  // send a JSON message to the server
+  sendJson(obj: unknown) {
+    this.sendText(JSON.stringify(obj));
   }
 }

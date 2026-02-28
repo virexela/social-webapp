@@ -11,7 +11,7 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: "SOCIAL — Encrypted Communication",
-  description: "Swiss-designed secure messaging platform with end-to-end encryption",
+  description: "Secure messaging platform with end-to-end encryption",
 };
 
 export default function RootLayout({
