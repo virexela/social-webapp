@@ -73,6 +73,16 @@ async function ensureIndexes(): Promise<void> {
       const pushSubscriptions = getPushSubscriptionsCollection();
       const roomMembers = getRoomMembersCollection();
 
+      // Legacy migration: older schema used a unique `publicKey` index.
+      // Current users don't persist that field, so it can block all new registrations with dup null key.
+      const userIndexes = await users.indexes();
+      for (const idx of userIndexes) {
+        const keyDoc = idx.key as Record<string, number> | undefined;
+        if (keyDoc?.publicKey === 1) {
+          await users.dropIndex(idx.name);
+        }
+      }
+
       await Promise.all([
         users.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
         users.createIndex({ isTemporary: 1, expiresAt: 1 }),
