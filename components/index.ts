@@ -12,3 +12,4 @@ export { MessageBlock } from "./MessageBlock";
 export { PageHeader } from "./PageHeader";
 export { SectionBlock } from "./SectionBlock";
 export { RecoveryKeyDisplay } from "./RecoveryKeyDisplay";
+export { PwaBootstrap } from "./PwaBootstrap";

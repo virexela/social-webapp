@@ -6,7 +6,10 @@ function ensureWsPath(base: string): string {
 
 export function getRelayWsUrl(): string {
   const isDev = process.env.NODE_ENV !== "production";
-  let base = process.env.NEXT_PUBLIC_RELAY_WS_URL ?? "ws://localhost:3001/ws";
+  let base =
+    process.env.NEXT_PUBLIC_RELAY_WS_URL ??
+    process.env.NEXT_PUBLIC_WS_URL ??
+    "ws://localhost:3001/ws";
 
   if (isDev && typeof window !== "undefined") {
     const host = window.location.hostname;
@@ -27,10 +30,9 @@ export function getRelayWsUrl(): string {
   if (!isDev) {
     try {
       const parsed = new URL(base);
-      if (parsed.protocol === "ws:") {
-        parsed.protocol = "wss:";
-        base = parsed.toString();
-      }
+      if (parsed.protocol === "ws:" || parsed.protocol === "http:") parsed.protocol = "wss:";
+      if (parsed.protocol === "https:") parsed.protocol = "wss:";
+      base = parsed.toString();
     } catch {
       // keep original if malformed; caller will fail fast on websocket creation
     }
