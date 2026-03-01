@@ -47,6 +47,7 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const scanControlsRef = useRef<IScannerControls | null>(null);
+  const scanStartInProgressRef = useRef(false);
   const inviteSocketRef = useRef<WebSocket | null>(null);
   const inviteAcceptedRoomsRef = useRef<Set<string>>(new Set());
 
@@ -134,31 +135,60 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
   const startQrScan = useCallback(async () => {
     setError("");
     setScanningQR(true);
-
-    try {
-      const video = videoRef.current;
-      if (!video) throw new Error("Camera view not ready");
-
-      const reader = new BrowserQRCodeReader();
-      const controls = await reader.decodeFromVideoDevice(undefined, video, (result, _error, controlsFromCb) => {
-        if (!result) return;
-
-        const text = result.getText();
-        setPastedInvite(text);
-        setScanningQR(false);
-        setError("");
-        controlsFromCb.stop();
-        scanControlsRef.current = null;
-      });
-
-      // Keep controls so we can stop scanning if user cancels/closes
-      scanControlsRef.current = controls;
-    } catch (e) {
-      setError((e as Error)?.message || "Unable to access camera");
-      setScanningQR(false);
-      scanControlsRef.current = null;
-    }
   }, []);
+
+  useEffect(() => {
+    if (!open || step !== "accept-invite" || !scanningQR) return;
+    if (scanStartInProgressRef.current) return;
+
+    let cancelled = false;
+    scanStartInProgressRef.current = true;
+
+    const beginScan = async () => {
+      try {
+        // Wait one frame so the <video> node is mounted after scanning state flips.
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        if (cancelled) return;
+
+        const video = videoRef.current;
+        if (!video) {
+          throw new Error("Camera view not ready");
+        }
+
+        const reader = new BrowserQRCodeReader();
+        const controls = await reader.decodeFromVideoDevice(undefined, video, (result, _error, controlsFromCb) => {
+          if (!result) return;
+
+          const text = result.getText();
+          setPastedInvite(text);
+          setScanningQR(false);
+          setError("");
+          controlsFromCb.stop();
+          scanControlsRef.current = null;
+        });
+
+        if (cancelled) {
+          controls.stop();
+          return;
+        }
+
+        scanControlsRef.current = controls;
+      } catch (e) {
+        if (cancelled) return;
+        setError((e as Error)?.message || "Unable to access camera");
+        setScanningQR(false);
+        scanControlsRef.current = null;
+      } finally {
+        scanStartInProgressRef.current = false;
+      }
+    };
+
+    void beginScan();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, step, scanningQR]);
 
   // Ensure camera stops when leaving accept step / closing modal
   useEffect(() => {

@@ -87,7 +87,7 @@ export default function ChatPage() {
 
     const id = socialId || localStorage.getItem("social_id") || "";
     socialIdRef.current = id;
-  }, [router]);
+  }, [router, socialId]);
 
   useEffect(() => {
     if (!contact) {
@@ -103,25 +103,39 @@ export default function ChatPage() {
     if (loadedHistoryKeyRef.current === historyKey) return;
     loadedHistoryKeyRef.current = historyKey;
 
-    // Only load from DB if contact doesn't already have messages (from localStorage persistence)
-    const hasLoadedMessages = contact.messages && contact.messages.length > 0;
-    if (hasLoadedMessages) return;
-
     let cancelled = false;
     (async () => {
       if (!socialId) return;
       const history = await getMessagesFromDB(contact.roomId, contact.conversationKey, socialId);
       if (!history.success || !history.messages || cancelled) return;
-      // Only replace if we actually got messages from DB
-      if (history.messages.length > 0) {
-        replaceMessages(contact.conversationKey, history.messages);
+      const localMessages = contact.messages ?? [];
+      if (history.messages.length === 0) {
+        // Keep local/persisted history when DB has no decryptable rows.
+        if (localMessages.length > 0) {
+          return;
+        }
+        replaceMessages(contact.conversationKey, []);
+        return;
       }
+
+      const mergedById = new Map<string, ChatMessage>();
+      [...localMessages, ...history.messages].forEach((msg) => {
+        const existing = mergedById.get(msg.id);
+        if (!existing || msg.timestamp >= existing.timestamp) {
+          mergedById.set(msg.id, msg);
+        }
+      });
+
+      replaceMessages(
+        contact.conversationKey,
+        Array.from(mergedById.values()).sort((a, b) => a.timestamp - b.timestamp)
+      );
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [contact?.roomId, contact?.conversationKey, replaceMessages, socialId, contact?.messages?.length]);
+  }, [contact, replaceMessages, socialId]);
 
   useEffect(() => {
     if (!contact) return;
@@ -200,7 +214,6 @@ export default function ChatPage() {
           if (document.hidden || !document.hasFocus()) {
             incrementUnread(contact.roomId);
           }
-          const socialId = socialIdRef.current;
         } catch {
           // ignore undecryptable payload
         }
@@ -217,17 +230,7 @@ export default function ChatPage() {
       socketRef.current?.close();
       socketRef.current = null;
     };
-  }, [
-    contact?.roomId,
-    contact?.conversationKey,
-    addMessage,
-    incrementUnread,
-    removeContact,
-    removeMessage,
-    roomId,
-    router,
-    setSelectedContactId,
-  ]);
+  }, [contact, addMessage, incrementUnread, removeContact, removeMessage, roomId, router, setSelectedContactId]);
 
   const sendEncryptedPayload = useCallback(
     async (payload: EncryptedPayload) => {

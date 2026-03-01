@@ -7,8 +7,37 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
-async function deriveTransportKey(conversationKeyHex: string): Promise<CryptoKey> {
-  const keyMaterial = hexToBytes(conversationKeyHex.trim());
+function getTransportKeyCandidates(conversationKey: string): Uint8Array[] {
+  const normalized = conversationKey.trim();
+  if (!normalized) return [];
+
+  const candidates: Uint8Array[] = [];
+
+  if (/^[0-9a-fA-F]+$/.test(normalized) && normalized.length % 2 === 0) {
+    const hexBytes = hexToBytes(normalized);
+    if (hexBytes.length > 0) {
+      candidates.push(hexBytes);
+    }
+  }
+
+  try {
+    const base64Bytes = base64UrlToBytes(normalized);
+    if (base64Bytes.length > 0) {
+      candidates.push(base64Bytes);
+    }
+  } catch {
+    // not base64url
+  }
+
+  const utf8Bytes = new TextEncoder().encode(normalized);
+  if (utf8Bytes.length > 0) {
+    candidates.push(utf8Bytes);
+  }
+
+  return candidates;
+}
+
+async function deriveTransportKey(keyMaterial: Uint8Array): Promise<CryptoKey> {
   if (keyMaterial.length === 0) {
     throw new Error("Missing conversation key");
   }
@@ -18,7 +47,12 @@ async function deriveTransportKey(conversationKeyHex: string): Promise<CryptoKey
 }
 
 export async function encryptTransportMessage(plaintext: string, conversationKeyHex: string): Promise<string> {
-  const key = await deriveTransportKey(conversationKeyHex);
+  const [primaryKeyMaterial] = getTransportKeyCandidates(conversationKeyHex);
+  if (!primaryKeyMaterial) {
+    throw new Error("Missing conversation key");
+  }
+
+  const key = await deriveTransportKey(primaryKeyMaterial);
   const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
   const plainBytes = new TextEncoder().encode(plaintext);
   const encrypted = await crypto.subtle.encrypt(
@@ -36,7 +70,6 @@ export async function encryptTransportMessage(plaintext: string, conversationKey
 }
 
 export async function decryptTransportMessage(ciphertext: string, conversationKeyHex: string): Promise<string> {
-  const key = await deriveTransportKey(conversationKeyHex);
   const packed = base64UrlToBytes(ciphertext);
 
   if (packed.length <= IV_LENGTH) {
@@ -46,11 +79,25 @@ export async function decryptTransportMessage(ciphertext: string, conversationKe
   const iv = packed.slice(0, IV_LENGTH);
   const cipherBytes = packed.slice(IV_LENGTH);
 
-  const decrypted = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: toArrayBuffer(iv) },
-    key,
-    toArrayBuffer(cipherBytes)
-  );
+  const keyCandidates = getTransportKeyCandidates(conversationKeyHex);
+  if (keyCandidates.length === 0) {
+    throw new Error("Missing conversation key");
+  }
 
-  return new TextDecoder().decode(decrypted);
+  let lastError: unknown;
+  for (const keyMaterial of keyCandidates) {
+    try {
+      const key = await deriveTransportKey(keyMaterial);
+      const decrypted = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: toArrayBuffer(iv) },
+        key,
+        toArrayBuffer(cipherBytes)
+      );
+      return new TextDecoder().decode(decrypted);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Failed to decrypt message");
 }

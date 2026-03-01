@@ -73,7 +73,14 @@ export async function getMessagesFromDB(
     const decrypted: ChatMessage[] = [];
     for (const raw of rawMessages) {
       try {
-        const decryptedPayload = await decryptTransportMessage(raw.encryptedContent, conversationKey);
+        let decryptedPayload = "";
+        try {
+          decryptedPayload = await decryptTransportMessage(raw.encryptedContent, conversationKey);
+        } catch {
+          // Legacy fallback: older records may store plaintext/JSON instead of encrypted payloads.
+          decryptedPayload = String(raw.encryptedContent ?? "");
+        }
+
         let parsed: {
           content: string;
           kind?: "text" | "file";
@@ -82,12 +89,30 @@ export async function getMessagesFromDB(
           fileDataBase64?: string;
         };
         try {
-          parsed = JSON.parse(decryptedPayload) as {
+          const parsedRaw = JSON.parse(decryptedPayload) as {
             content: string;
+            text?: string;
             kind?: "text" | "file";
+            type?: "chat" | "file";
             fileName?: string;
             mimeType?: string;
             fileDataBase64?: string;
+            fileData?: string;
+          };
+
+          const normalizedKind =
+            parsedRaw.kind ?? (parsedRaw.type === "file" ? "file" : "text");
+          const normalizedContent =
+            parsedRaw.content ??
+            parsedRaw.text ??
+            (normalizedKind === "file" ? parsedRaw.fileName ?? "Attachment" : "");
+
+          parsed = {
+            content: String(normalizedContent ?? ""),
+            kind: normalizedKind,
+            fileName: parsedRaw.fileName,
+            mimeType: parsedRaw.mimeType,
+            fileDataBase64: parsedRaw.fileDataBase64 ?? parsedRaw.fileData,
           };
         } catch {
           parsed = { content: decryptedPayload, kind: "text" };
