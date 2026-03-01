@@ -81,13 +81,16 @@ export default function Home() {
       return;
     }
 
-    void (async () => {
-      const result = await getContactsFromDB(socialId);
-      if (result.success && result.contacts) {
-        setContacts(result.contacts);
-      }
-    })();
-  }, [router, setContacts]);
+    // Only load from DB if store is empty to prevent overwriting persisted contacts
+    if (contacts.length === 0) {
+      void (async () => {
+        const result = await getContactsFromDB(socialId);
+        if (result.success && result.contacts && result.contacts.length > 0) {
+          setContacts(result.contacts);
+        }
+      })();
+    }
+  }, [router, setContacts, contacts.length]);
 
   useEffect(() => {
     if (!(typeof window !== "undefined" && "serviceWorker" in navigator)) return;
