@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureDatabaseConnection, getMessagesCollection } from "@/lib/db/database";
+import { ensureDatabaseConnection, getMessagesCollection, getRoomMembersCollection } from "@/lib/db/database";
+import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
+import { isValidSocialId, isValidRoomId, isValidMessageId, isValidTimestamp, isValidEncryptedMessageSize } from "@/lib/validation/schemas";
 
 interface MessagePayload {
   senderSocialId: string;
@@ -24,6 +26,31 @@ export async function POST(req: NextRequest) {
     if (!senderSocialId || !roomId || !messageId || !encryptedContent || !Number.isFinite(timestamp)) {
       return NextResponse.json({ success: false, error: "Invalid message payload" }, { status: 400 });
     }
+
+    // ✅ IMPROVED: Use standardized validation
+    if (!isValidSocialId(senderSocialId)) {
+      return NextResponse.json({ success: false, error: "Invalid senderSocialId format" }, { status: 400 });
+    }
+
+    if (!isValidRoomId(roomId)) {
+      return NextResponse.json({ success: false, error: "Invalid roomId format" }, { status: 400 });
+    }
+
+    if (!isValidMessageId(messageId)) {
+      return NextResponse.json({ success: false, error: "Invalid messageId format" }, { status: 400 });
+    }
+
+    if (!isValidTimestamp(timestamp)) {
+      return NextResponse.json({ success: false, error: "Invalid timestamp" }, { status: 400 });
+    }
+
+    if (!isValidEncryptedMessageSize(encryptedContent, MAX_ENCRYPTED_CONTENT_BYTES)) {
+      return NextResponse.json({ success: false, error: "Message payload exceeds limits" }, { status: 413 });
+    }
+
+    const authError = await validateUserAuthenticationOrRespond(req, senderSocialId);
+    if (authError) return authError;
+
     if (
       senderSocialId.length > MAX_ID_LENGTH ||
       roomId.length > MAX_ID_LENGTH ||
@@ -66,17 +93,31 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
+    const socialId = req.nextUrl.searchParams.get("socialId")?.trim();
     const roomId = req.nextUrl.searchParams.get("roomId")?.trim();
 
-    if (!roomId) {
-      return NextResponse.json({ success: false, error: "roomId is required" }, { status: 400 });
+    if (!socialId || !roomId) {
+      return NextResponse.json({ success: false, error: "socialId and roomId are required" }, { status: 400 });
     }
+    if (!isValidSocialId(socialId) || !isValidRoomId(roomId)) {
+      return NextResponse.json({ success: false, error: "Invalid socialId or roomId" }, { status: 400 });
+    }
+
+    const authError = await validateUserAuthenticationOrRespond(req, socialId);
+    if (authError) return authError;
+
     if (roomId.length > MAX_ID_LENGTH) {
       return NextResponse.json({ success: false, error: "Invalid roomId" }, { status: 400 });
     }
 
     await ensureDatabaseConnection();
+    const roomMembers = getRoomMembersCollection();
     const messages = getMessagesCollection();
+
+    const membership = await roomMembers.findOne({ socialId, roomId }, { projection: { _id: 1 } });
+    if (!membership) {
+      return NextResponse.json({ success: false, error: "Forbidden: not a room member" }, { status: 403 });
+    }
 
     const docs = await messages
       .find(

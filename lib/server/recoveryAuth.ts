@@ -1,4 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "crypto";
+import nacl from "tweetnacl";
 
 export type BackendKeyEnvelope = {
   v: 1;
@@ -27,6 +28,10 @@ export function isValidRecoveryAuthHash(hash: string | undefined): boolean {
   return !!hash && /^[0-9a-f]{64}$/i.test(hash);
 }
 
+export function isValidRecoveryAuthPublicKey(publicKeyHex: string | undefined): boolean {
+  return !!publicKeyHex && /^[0-9a-f]{64}$/i.test(publicKeyHex);
+}
+
 export function recoveryAuthMatches(expectedHash: string, providedHash: string): boolean {
   if (!isValidRecoveryAuthHash(expectedHash) || !isValidRecoveryAuthHash(providedHash)) {
     return false;
@@ -45,7 +50,7 @@ export function hashNonce(nonce: string): string {
 
 export function verifyChallengeSignature(
   recoveryAuthHash: string,
-  action: "clear-data" | "delete-user",
+  action: "clear-data" | "delete-user" | "session-auth",
   socialId: string,
   nonce: string,
   signatureHex: string
@@ -61,4 +66,21 @@ export function verifyChallengeSignature(
   if (expected.length !== provided.length) return false;
 
   return timingSafeEqual(expected, provided);
+}
+
+export function verifyChallengeSignatureWithPublicKey(
+  recoveryAuthPublicKey: string,
+  action: "clear-data" | "delete-user" | "session-auth",
+  socialId: string,
+  nonce: string,
+  signatureHex: string
+): boolean {
+  if (!isValidRecoveryAuthPublicKey(recoveryAuthPublicKey)) return false;
+  if (!/^[0-9a-f]+$/i.test(signatureHex) || signatureHex.length !== 128) return false;
+
+  const payload = new TextEncoder().encode(`${action}:${socialId}:${nonce}`);
+  const signature = Buffer.from(signatureHex, "hex");
+  const publicKey = Buffer.from(recoveryAuthPublicKey, "hex");
+
+  return nacl.sign.detached.verify(payload, signature, publicKey);
 }

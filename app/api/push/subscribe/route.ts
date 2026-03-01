@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabaseConnection, getPushSubscriptionsCollection } from "@/lib/db/database";
+import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
+import { isValidSocialId, isValidPushEndpoint, isValidVapidKey } from "@/lib/validation/schemas";
 
 interface SubscribePayload {
   socialId: string;
@@ -23,6 +25,23 @@ export async function POST(req: NextRequest) {
     if (!socialId || !endpoint || !p256dh || !auth) {
       return NextResponse.json({ success: false, error: "Invalid subscription payload" }, { status: 400 });
     }
+
+    // ✅ IMPROVED: Use standardized validation
+    if (!isValidSocialId(socialId)) {
+      return NextResponse.json({ success: false, error: "Invalid socialId format" }, { status: 400 });
+    }
+
+    if (!isValidPushEndpoint(endpoint, MAX_ENDPOINT_LENGTH)) {
+      return NextResponse.json({ success: false, error: "Invalid push endpoint URL" }, { status: 400 });
+    }
+
+    if (!isValidVapidKey(p256dh) || !isValidVapidKey(auth)) {
+      return NextResponse.json({ success: false, error: "Invalid VAPID key format" }, { status: 400 });
+    }
+
+    const authError = await validateUserAuthenticationOrRespond(req, socialId);
+    if (authError) return authError;
+
     if (
       !/^[a-fA-F0-9]{24}$/.test(socialId) ||
       endpoint.length > MAX_ENDPOINT_LENGTH ||

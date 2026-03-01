@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabaseConnection, getContactsCollection } from "@/lib/db/database";
+import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
+import { isValidSocialId, isValidRoomId, isValidEncryptedContactSize } from "@/lib/validation/schemas";
 
 interface SaveContactPayload {
   socialId: string;
@@ -20,6 +22,23 @@ export async function POST(req: NextRequest) {
     if (!socialId || !roomId || !encryptedContact) {
       return NextResponse.json({ success: false, error: "socialId, roomId and encryptedContact are required" }, { status: 400 });
     }
+
+    // ✅ IMPROVED: Use standardized validation
+    if (!isValidSocialId(socialId)) {
+      return NextResponse.json({ success: false, error: "Invalid socialId format" }, { status: 400 });
+    }
+
+    if (!isValidRoomId(roomId)) {
+      return NextResponse.json({ success: false, error: "Invalid roomId format" }, { status: 400 });
+    }
+
+    if (!isValidEncryptedContactSize(encryptedContact, MAX_CONTACT_BYTES)) {
+      return NextResponse.json({ success: false, error: "Contact payload exceeds size limit" }, { status: 413 });
+    }
+
+    const authError = await validateUserAuthenticationOrRespond(req, socialId);
+    if (authError) return authError;
+
     if (
       !/^[a-fA-F0-9]{24}$/.test(socialId) ||
       roomId.length > MAX_ID_LENGTH ||
@@ -55,6 +74,9 @@ export async function GET(req: NextRequest) {
     if (!/^[a-fA-F0-9]{24}$/.test(socialId)) {
       return NextResponse.json({ success: false, error: "Invalid socialId" }, { status: 400 });
     }
+
+    const authError = await validateUserAuthenticationOrRespond(req, socialId);
+    if (authError) return authError;
 
     await ensureDatabaseConnection();
     const contacts = getContactsCollection();

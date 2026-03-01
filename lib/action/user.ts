@@ -1,7 +1,7 @@
 import { BackendKeyEnvelope } from "@/lib/protocol/recoveryVault";
 
 interface RegisterInput {
-  recoveryAuthHash: string;
+  recoveryAuthPublicKey: string;
   backendKeyEnvelope: BackendKeyEnvelope;
   temporary?: boolean;
 }

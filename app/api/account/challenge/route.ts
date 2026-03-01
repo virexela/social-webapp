@@ -5,7 +5,7 @@ import { ensureDatabaseConnection, getUsersCollection } from "@/lib/db/database"
 
 interface ChallengePayload {
   socialId: string;
-  action: "clear-data" | "delete-user";
+  action: "clear-data" | "delete-user" | "session-auth";
 }
 
 export async function POST(req: NextRequest) {
@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
     const socialId = body.socialId?.trim();
     const action = body.action;
 
-    if (!socialId || (action !== "clear-data" && action !== "delete-user")) {
+    if (!socialId || (action !== "clear-data" && action !== "delete-user" && action !== "session-auth")) {
       return NextResponse.json({ success: false, error: "Invalid challenge request" }, { status: 400 });
     }
 

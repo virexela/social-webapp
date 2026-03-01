@@ -1,3 +1,5 @@
+import { fetchWithAutoSession } from "@/lib/action/authFetch";
+
 interface PushSubscriptionJson {
   endpoint: string;
   keys: {
@@ -66,8 +68,9 @@ export async function registerPushSubscription(socialId: string): Promise<{ succ
       }));
 
     const json = sub.toJSON() as PushSubscriptionJson;
-    const response = await fetch("/api/push/subscribe", {
+    const response = await fetchWithAutoSession("/api/push/subscribe", {
       method: "POST",
+      socialId,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         socialId,
@@ -97,8 +100,9 @@ export async function unregisterPushSubscription(socialId: string): Promise<{ su
       }
     }
 
-    const response = await fetch("/api/push/unsubscribe", {
+    const response = await fetchWithAutoSession("/api/push/unsubscribe", {
       method: "POST",
+      socialId,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ socialId }),
     });
@@ -116,8 +120,9 @@ export async function unregisterPushSubscription(socialId: string): Promise<{ su
 
 export async function notifyRoomMessage(roomId: string, senderSocialId: string): Promise<void> {
   try {
-    await fetch("/api/push/notify", {
+    await fetchWithAutoSession("/api/push/notify", {
       method: "POST",
+      socialId: senderSocialId,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ roomId, senderSocialId }),
     });
@@ -148,8 +153,9 @@ export async function sendTestNotification(
   error?: string;
 }> {
   try {
-    const response = await fetch("/api/push/test", {
+    const response = await fetchWithAutoSession("/api/push/test", {
       method: "POST",
+      socialId,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ socialId }),
     });

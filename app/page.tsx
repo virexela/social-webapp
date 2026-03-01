@@ -216,8 +216,8 @@ export default function Home() {
                   const socialId = localStorage.getItem("social_id");
                   if (socialId) {
                     await deleteContactFromDB(socialId, contact.roomId);
+                    await deleteMessagesForRoom(socialId, contact.roomId);
                   }
-                  await deleteMessagesForRoom(contact.roomId);
                   removeContact(contact.roomId);
                 };
 

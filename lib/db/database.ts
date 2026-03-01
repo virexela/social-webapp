@@ -64,6 +64,10 @@ export function getContactsCollection() {
   return getDb().collection("contacts");
 }
 
+export function getSessionsCollection() {
+  return getDb().collection("sessions");
+}
+
 async function ensureIndexes(): Promise<void> {
   if (!globalWithMongo.__mongoIndexInitPromise) {
     globalWithMongo.__mongoIndexInitPromise = (async () => {
@@ -72,6 +76,7 @@ async function ensureIndexes(): Promise<void> {
       const messages = getMessagesCollection();
       const pushSubscriptions = getPushSubscriptionsCollection();
       const roomMembers = getRoomMembersCollection();
+      const sessions = getSessionsCollection();
 
       // Legacy migration: older schema used a unique `publicKey` index.
       // Current users don't persist that field, so it can block all new registrations with dup null key.
@@ -81,12 +86,31 @@ async function ensureIndexes(): Promise<void> {
         if (keyDoc?.publicKey === 1) {
           await users.dropIndex(idx.name);
         }
+        if (keyDoc?.recoveryAuthHash === 1) {
+          await users.dropIndex(idx.name);
+        }
+        if (keyDoc?.recoveryAuthPublicKey === 1) {
+          await users.dropIndex(idx.name);
+        }
       }
 
       await Promise.all([
         users.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
         users.createIndex({ isTemporary: 1, expiresAt: 1 }),
-        users.createIndex({ recoveryAuthHash: 1 }, { unique: true }),
+        users.createIndex(
+          { recoveryAuthHash: 1 },
+          {
+            unique: true,
+            partialFilterExpression: { recoveryAuthHash: { $exists: true, $type: "string" } },
+          }
+        ),
+        users.createIndex(
+          { recoveryAuthPublicKey: 1 },
+          {
+            unique: true,
+            partialFilterExpression: { recoveryAuthPublicKey: { $exists: true, $type: "string" } },
+          }
+        ),
 
         contacts.createIndex({ socialId: 1, roomId: 1 }, { unique: true }),
         contacts.createIndex({ roomId: 1 }),
@@ -96,6 +120,10 @@ async function ensureIndexes(): Promise<void> {
 
         pushSubscriptions.createIndex({ socialId: 1, endpoint: 1 }, { unique: true }),
         pushSubscriptions.createIndex({ socialId: 1 }),
+
+        sessions.createIndex({ tokenHash: 1 }, { unique: true }),
+        sessions.createIndex({ socialId: 1 }),
+        sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
 
         roomMembers.createIndex({ socialId: 1, roomId: 1 }, { unique: true }),
         roomMembers.createIndex({ roomId: 1 }),
@@ -122,6 +150,7 @@ async function runPeriodicMaintenance(): Promise<void> {
       const messages = getMessagesCollection();
       const pushSubscriptions = getPushSubscriptionsCollection();
       const roomMembers = getRoomMembersCollection();
+      const sessions = getSessionsCollection();
 
       const expiredUsers = await users
         .find(
@@ -156,6 +185,7 @@ async function runPeriodicMaintenance(): Promise<void> {
         contacts.deleteMany({ socialId: { $in: userIds } }),
         pushSubscriptions.deleteMany({ socialId: { $in: userIds } }),
         roomMembers.deleteMany({ socialId: { $in: userIds } }),
+        sessions.deleteMany({ socialId: { $in: userIds } }),
         users.deleteMany({ _id: { $in: expiredUsers.map((u) => u._id) } }),
       ]);
     } finally {

@@ -1,4 +1,5 @@
 import { hexToBytes } from "@/lib/protocol/bytes";
+import nacl from "tweetnacl";
 
 export type BackendKeyEnvelope = {
   v: 1;
@@ -36,22 +37,23 @@ function getSubtleCrypto(): SubtleCrypto {
   return subtle;
 }
 
-export async function deriveRecoveryAuthHash(recoveryKeyHex: string): Promise<string> {
+export function deriveRecoveryAuthPublicKey(recoveryKeyHex: string): string {
   const recoveryKey = validateRecoveryKeyHex(recoveryKeyHex);
-  const subtle = getSubtleCrypto();
-  const digest = await subtle.digest("SHA-256", toArrayBuffer(recoveryKey));
-  return bytesToHex(new Uint8Array(digest));
+  const keyPair = nacl.sign.keyPair.fromSeed(recoveryKey);
+  return bytesToHex(keyPair.publicKey);
 }
 
-export async function signAccountChallenge(
+export async function signAccountChallengeLegacy(
   recoveryKeyHex: string,
-  action: "clear-data" | "delete-user",
+  action: "clear-data" | "delete-user" | "session-auth",
   socialId: string,
   nonce: string
 ): Promise<string> {
-  const recoveryAuthHash = await deriveRecoveryAuthHash(recoveryKeyHex);
-  const keyBytes = hexToBytes(recoveryAuthHash);
+  const recoveryKey = validateRecoveryKeyHex(recoveryKeyHex);
   const subtle = getSubtleCrypto();
+  const digest = await subtle.digest("SHA-256", toArrayBuffer(recoveryKey));
+  const recoveryAuthHash = bytesToHex(new Uint8Array(digest));
+  const keyBytes = hexToBytes(recoveryAuthHash);
   const cryptoKey = await subtle.importKey(
     "raw",
     toArrayBuffer(keyBytes),
@@ -63,6 +65,19 @@ export async function signAccountChallenge(
   const payload = `${action}:${socialId}:${nonce}`;
   const signature = await subtle.sign("HMAC", cryptoKey, toArrayBuffer(new TextEncoder().encode(payload)));
   return bytesToHex(new Uint8Array(signature));
+}
+
+export function signAccountChallenge(
+  recoveryKeyHex: string,
+  action: "clear-data" | "delete-user" | "session-auth",
+  socialId: string,
+  nonce: string
+): string {
+  const recoveryKey = validateRecoveryKeyHex(recoveryKeyHex);
+  const keyPair = nacl.sign.keyPair.fromSeed(recoveryKey);
+  const payloadBytes = new TextEncoder().encode(`${action}:${socialId}:${nonce}`);
+  const signature = nacl.sign.detached(payloadBytes, keyPair.secretKey);
+  return bytesToHex(signature);
 }
 
 export async function createBackendKeyEnvelope(recoveryKeyHex: string): Promise<BackendKeyEnvelope> {

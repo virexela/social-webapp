@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { ArrowLeft, Send, MessageSquare, Trash2, Paperclip } from "lucide-react";
@@ -13,6 +14,7 @@ import {
   getMessagesFromDB,
   saveMessageToDB,
 } from "@/lib/action/messages";
+import { dequeueOutboxItem, enqueueOutboxItem, getOutboxForRoom } from "@/lib/action/outbox";
 import { decryptTransportMessage, encryptTransportMessage } from "@/lib/protocol/transportCrypto";
 import { notifyRoomMessage } from "@/lib/action/push";
 import { joinRoomMembership } from "@/lib/action/rooms";
@@ -178,9 +180,9 @@ export default function ChatPage() {
           if (payload.type === "contact_removed" && payload.roomId === roomIdForEffect) {
             removeContact(roomIdForEffect);
             setSelectedContactId(null);
-            await deleteMessagesForRoom(roomIdForEffect);
             const socialId = socialIdRef.current;
             if (socialId) {
+              await deleteMessagesForRoom(socialId, roomIdForEffect);
               await deleteContactFromDB(socialId, roomIdForEffect);
             }
             router.replace("/");
@@ -189,7 +191,10 @@ export default function ChatPage() {
 
           if (payload.type === "message_deleted" && payload.roomId === roomIdForEffect) {
             removeMessage(conversationKeyForEffect, payload.messageId);
-            await deleteMessageForRoom(roomIdForEffect, payload.messageId);
+            const socialId = socialIdRef.current;
+            if (socialId) {
+              await deleteMessageForRoom(socialId, roomIdForEffect, payload.messageId);
+            }
             return;
           }
 
@@ -282,6 +287,56 @@ export default function ChatPage() {
     [contact, roomId]
   );
 
+  const retryQueuedOutgoing = useCallback(async () => {
+    if (!contact) return;
+    if (!navigator.onLine) return;
+
+    const socialId = socialIdRef.current;
+    if (!socialId) return;
+
+    const queued = getOutboxForRoom(contact.roomId);
+    if (queued.length === 0) return;
+
+    for (const queuedItem of queued) {
+      setMessageStatus(contact.conversationKey, queuedItem.message.id, "sending");
+      try {
+        await sendEncryptedPayload(queuedItem.payload);
+        await saveMessageToDB({
+          senderSocialId: socialId,
+          roomId: contact.roomId,
+          message: { ...queuedItem.message, status: "sent" },
+        });
+        setMessageStatus(contact.conversationKey, queuedItem.message.id, "sent");
+        dequeueOutboxItem(queuedItem.message.id);
+      } catch {
+        setMessageStatus(contact.conversationKey, queuedItem.message.id, "failed");
+        break;
+      }
+    }
+  }, [contact, sendEncryptedPayload, setMessageStatus]);
+
+  useEffect(() => {
+    if (!contact) return;
+
+    const runRetry = () => {
+      void retryQueuedOutgoing();
+    };
+
+    window.addEventListener("online", runRetry);
+    const intervalId = window.setInterval(() => {
+      if (navigator.onLine) {
+        void retryQueuedOutgoing();
+      }
+    }, 15000);
+
+    void retryQueuedOutgoing();
+
+    return () => {
+      window.removeEventListener("online", runRetry);
+      window.clearInterval(intervalId);
+    };
+  }, [contact, retryQueuedOutgoing]);
+
   const sendMessage = useCallback(async () => {
     if (!contact || !message.trim()) return;
     setError("");
@@ -298,10 +353,12 @@ export default function ChatPage() {
     };
 
     addMessage(newMessage, contact.conversationKey);
+    setMessage(""); // Clear input immediately (optimistic UI)
 
     try {
       await sendEncryptedPayload({ type: "chat", messageId: id, text: message });
       setMessageStatus(contact.conversationKey, id, "sent");
+      dequeueOutboxItem(id);
       const socialId = socialIdRef.current;
       if (socialId) {
         await saveMessageToDB({
@@ -310,7 +367,6 @@ export default function ChatPage() {
           message: { ...newMessage, status: "sent" },
         });
       }
-      setMessage("");
     } catch (err) {
       setMessageStatus(contact.conversationKey, id, "failed");
       const socialId = socialIdRef.current;
@@ -321,8 +377,14 @@ export default function ChatPage() {
           message: { ...newMessage, status: "failed" },
         });
       }
+      enqueueOutboxItem({
+        roomId: contact.roomId,
+        payload: { type: "chat", messageId: id, text: message },
+        message: { ...newMessage, status: "failed" },
+        createdAt: Date.now(),
+      });
       console.error("Failed to send message:", err);
-      setError("Failed to send message. Please try again.");
+      setError("Message queued. It will send automatically when connection is back.");
     }
   }, [contact, message, addMessage, sendEncryptedPayload, setMessageStatus]);
 
@@ -363,9 +425,23 @@ export default function ChatPage() {
             message: { ...newMessage, status: "sent" },
           });
         }
+          dequeueOutboxItem(id);
       } catch (err) {
         setMessageStatus(contact.conversationKey, id, "failed");
+          enqueueOutboxItem({
+            roomId: contact.roomId,
+            payload: {
+              type: "file",
+              messageId: id,
+              fileName: newMessage.fileName!,
+              mimeType: newMessage.mimeType!,
+              fileDataBase64,
+            },
+            message: { ...newMessage, status: "failed" },
+            createdAt: Date.now(),
+          });
         console.error("Failed to send attachment:", err);
+          setError("Attachment queued. It will send automatically when connection is back.");
       }
     },
     [contact, addMessage, sendEncryptedPayload, setMessageStatus]
@@ -375,7 +451,10 @@ export default function ChatPage() {
     async (messageId: string) => {
       if (!contact) return;
       removeMessage(contact.conversationKey, messageId);
-      await deleteMessageForRoom(contact.roomId, messageId);
+      const socialId = socialIdRef.current;
+      if (socialId) {
+        await deleteMessageForRoom(socialId, contact.roomId, messageId);
+      }
       try {
         await sendEncryptedPayload({ type: "message_deleted", roomId: contact.roomId, messageId });
       } catch {
@@ -395,9 +474,9 @@ export default function ChatPage() {
       // best effort
     }
 
-    await deleteMessagesForRoom(contact.roomId);
     const socialId = socialIdRef.current;
     if (socialId) {
+      await deleteMessagesForRoom(socialId, contact.roomId);
       await deleteContactFromDB(socialId, contact.roomId);
     }
     removeContact(contact.roomId);
@@ -493,10 +572,13 @@ export default function ChatPage() {
                   {m.kind === "file" && m.fileDataBase64 ? (
                     <div className="space-y-2">
                       {m.mimeType?.startsWith("image/") ? (
-                        <img
+                        <Image
                           src={`data:${m.mimeType};base64,${m.fileDataBase64}`}
                           alt={m.fileName || "attachment"}
-                          className="max-w-full rounded"
+                          width={320}
+                          height={240}
+                          unoptimized
+                          className="max-w-full h-auto rounded"
                         />
                       ) : null}
                       <a

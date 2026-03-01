@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabaseConnection, getPushSubscriptionsCollection, getRoomMembersCollection } from "@/lib/db/database";
 import { sendWebPush } from "@/lib/server/vapid";
+import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
 
 interface NotifyPayload {
   roomId: string;
@@ -16,6 +17,10 @@ export async function POST(req: NextRequest) {
     if (!roomId || !senderSocialId) {
       return NextResponse.json({ success: false, error: "roomId and senderSocialId are required" }, { status: 400 });
     }
+
+    const authError = await validateUserAuthenticationOrRespond(req, senderSocialId);
+    if (authError) return authError;
+
     if (!/^[a-fA-F0-9]{24}$/.test(senderSocialId) || roomId.length > 128) {
       return NextResponse.json({ success: false, error: "Invalid notify payload" }, { status: 400 });
     }
@@ -23,6 +28,11 @@ export async function POST(req: NextRequest) {
     await ensureDatabaseConnection();
     const membersCol = getRoomMembersCollection();
     const subsCol = getPushSubscriptionsCollection();
+
+    const senderMembership = await membersCol.findOne({ roomId, socialId: senderSocialId }, { projection: { _id: 1 } });
+    if (!senderMembership) {
+      return NextResponse.json({ success: false, error: "Forbidden: sender is not a room member" }, { status: 403 });
+    }
 
     const members = await membersCol.find({ roomId, socialId: { $ne: senderSocialId } }, { projection: { socialId: 1, _id: 0 } }).toArray();
     if (members.length === 0) {

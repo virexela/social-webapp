@@ -6,8 +6,9 @@ import { motion } from "framer-motion";
 
 import { Button, Input, Logo } from "@/components";
 import { registerUser } from "@/lib/action/user";
+import { authenticateSessionWithRecovery } from "@/lib/action/session";
 import { hexToBytes } from "@/lib/protocol/bytes";
-import { createBackendKeyEnvelope, deriveRecoveryAuthHash } from "@/lib/protocol/recoveryVault";
+import { createBackendKeyEnvelope, deriveRecoveryAuthPublicKey } from "@/lib/protocol/recoveryVault";
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
@@ -62,9 +63,9 @@ function LoginPageContent() {
       const recoveryKey = crypto.getRandomValues(new Uint8Array(32));
       const recoveryHex = bytesToHex(recoveryKey);
 
-      const recoveryAuthHash = await deriveRecoveryAuthHash(recoveryHex);
+      const recoveryAuthPublicKey = deriveRecoveryAuthPublicKey(recoveryHex);
       const backendKeyEnvelope = await createBackendKeyEnvelope(recoveryHex);
-      const regRes = await registerUser({ recoveryAuthHash, backendKeyEnvelope });
+      const regRes = await registerUser({ recoveryAuthPublicKey, backendKeyEnvelope });
 
       if (!regRes.socialId) {
         console.warn('registerUser failed:', regRes.error);
@@ -72,6 +73,10 @@ function LoginPageContent() {
       }
 
       const socialId = regRes.socialId;
+      const authResult = await authenticateSessionWithRecovery({ socialId, recoveryKeyHex: recoveryHex });
+      if (!authResult.success) {
+        throw new Error(authResult.error || "Failed to establish session");
+      }
 
       setGeneratedSocialId(socialId);
       setGeneratedRecoveryKeyHex(recoveryHex);
@@ -99,6 +104,14 @@ function LoginPageContent() {
         throw new Error("Recovery key must be 32 bytes (64 hex characters)");
       }
 
+      const authResult = await authenticateSessionWithRecovery({
+        socialId: expectedSocialId,
+        recoveryKeyHex: trimmedRecovery,
+      });
+      if (!authResult.success) {
+        throw new Error(authResult.error || "Recovery authentication failed");
+      }
+
       storeRecoveryCredentials(trimmedRecovery, expectedSocialId);
 
       router.replace(next);
@@ -115,16 +128,24 @@ function LoginPageContent() {
     try {
       const recoveryKey = crypto.getRandomValues(new Uint8Array(32));
       const recoveryHex = bytesToHex(recoveryKey);
-      const recoveryAuthHash = await deriveRecoveryAuthHash(recoveryHex);
+      const recoveryAuthPublicKey = deriveRecoveryAuthPublicKey(recoveryHex);
       const backendKeyEnvelope = await createBackendKeyEnvelope(recoveryHex);
       const regRes = await registerUser({
-        recoveryAuthHash,
+        recoveryAuthPublicKey,
         backendKeyEnvelope,
         temporary: true,
       });
 
       if (!regRes.socialId) {
         throw new Error(regRes.error || "Failed to create temporary account");
+      }
+
+      const authResult = await authenticateSessionWithRecovery({
+        socialId: regRes.socialId,
+        recoveryKeyHex: recoveryHex,
+      });
+      if (!authResult.success) {
+        throw new Error(authResult.error || "Failed to establish session");
       }
 
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();

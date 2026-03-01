@@ -1,5 +1,6 @@
 import { Contact } from "@/lib/state/store";
 import { decryptMessageFromStorage, encryptMessageForStorage } from "@/lib/protocol/messageCrypto";
+import { fetchWithAutoSession } from "@/lib/action/authFetch";
 
 interface StoredContactRecord {
   roomId: string;
@@ -30,8 +31,9 @@ export async function saveContactToDB(socialId: string, contact: Contact): Promi
       })
     );
 
-    const response = await fetch("/api/contacts", {
+    const response = await fetchWithAutoSession("/api/contacts", {
       method: "POST",
+      socialId,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ socialId, roomId: contact.roomId, encryptedContact }),
     });
@@ -51,8 +53,9 @@ export async function saveContactToDB(socialId: string, contact: Contact): Promi
 export async function getContactsFromDB(socialId: string): Promise<{ success: boolean; contacts?: Contact[]; error?: string }> {
   try {
     const params = new URLSearchParams({ socialId });
-    const response = await fetch(`/api/contacts?${params.toString()}`, {
+    const response = await fetchWithAutoSession(`/api/contacts?${params.toString()}`, {
       method: "GET",
+      socialId,
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
     });
@@ -119,8 +122,9 @@ export async function getContactsFromDB(socialId: string): Promise<{ success: bo
 
 export async function deleteContactFromDB(socialId: string, roomId: string): Promise<{ success: boolean; error?: string }> {
   try {
-    const response = await fetch("/api/contacts/delete", {
+    const response = await fetchWithAutoSession("/api/contacts/delete", {
       method: "POST",
+      socialId,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ socialId, roomId }),
     });

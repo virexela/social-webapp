@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabaseConnection, getContactsCollection } from "@/lib/db/database";
+import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
 
 interface DeleteContactPayload {
   socialId: string;
@@ -15,6 +16,9 @@ export async function POST(req: NextRequest) {
     if (!socialId || !roomId) {
       return NextResponse.json({ success: false, error: "socialId and roomId are required" }, { status: 400 });
     }
+
+    const authError = await validateUserAuthenticationOrRespond(req, socialId);
+    if (authError) return authError;
 
     await ensureDatabaseConnection();
     const contacts = getContactsCollection();

@@ -1,5 +1,6 @@
 import { ChatMessage } from "@/lib/state/store";
 import { decryptTransportMessage, encryptTransportMessage } from "@/lib/protocol/transportCrypto";
+import { fetchWithAutoSession } from "@/lib/action/authFetch";
 
 export interface PersistMessageInput {
   senderSocialId: string;
@@ -20,8 +21,9 @@ export async function saveMessageToDB(input: PersistMessageInput): Promise<{ suc
       input.message.conversationKey
     );
 
-    const response = await fetch("/api/messages", {
+    const response = await fetchWithAutoSession("/api/messages", {
       method: "POST",
+      socialId: input.senderSocialId,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         senderSocialId: input.senderSocialId,
@@ -50,9 +52,10 @@ export async function getMessagesFromDB(
   currentSocialId: string
 ): Promise<{ success: boolean; messages?: ChatMessage[]; error?: string }> {
   try {
-    const params = new URLSearchParams({ roomId });
-    const response = await fetch(`/api/messages?${params.toString()}`, {
+    const params = new URLSearchParams({ roomId, socialId: currentSocialId });
+    const response = await fetchWithAutoSession(`/api/messages?${params.toString()}`, {
       method: "GET",
+      socialId: currentSocialId,
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
     });
@@ -143,12 +146,13 @@ export async function getMessagesFromDB(
   }
 }
 
-export async function deleteMessagesForRoom(roomId: string): Promise<{ success: boolean; error?: string }> {
+export async function deleteMessagesForRoom(socialId: string, roomId: string): Promise<{ success: boolean; error?: string }> {
   try {
-    const response = await fetch("/api/messages/delete-room", {
+    const response = await fetchWithAutoSession("/api/messages/delete-room", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomId }),
+      socialId,
+      body: JSON.stringify({ socialId, roomId }),
     });
 
     if (!response.ok) {
@@ -163,12 +167,13 @@ export async function deleteMessagesForRoom(roomId: string): Promise<{ success: 
   }
 }
 
-export async function deleteMessageForRoom(roomId: string, messageId: string): Promise<{ success: boolean; error?: string }> {
+export async function deleteMessageForRoom(socialId: string, roomId: string, messageId: string): Promise<{ success: boolean; error?: string }> {
   try {
-    const response = await fetch("/api/messages/delete-message", {
+    const response = await fetchWithAutoSession("/api/messages/delete-message", {
       method: "POST",
+      socialId,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomId, messageId }),
+      body: JSON.stringify({ socialId, roomId, messageId }),
     });
 
     if (!response.ok) {

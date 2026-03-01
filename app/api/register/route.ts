@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { ensureDatabaseConnection, getUsersCollection } from "@/lib/db/database";
-import { BackendKeyEnvelope, isValidBackendKeyEnvelope, isValidRecoveryAuthHash } from "@/lib/server/recoveryAuth";
+import { BackendKeyEnvelope, isValidBackendKeyEnvelope, isValidRecoveryAuthPublicKey } from "@/lib/server/recoveryAuth";
 
 interface RegisterPayload {
-  recoveryAuthHash: string;
+  recoveryAuthPublicKey: string;
   backendKeyEnvelope: BackendKeyEnvelope;
   temporary?: boolean;
 }
@@ -11,11 +11,11 @@ interface RegisterPayload {
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as RegisterPayload;
-    const recoveryAuthHash = body.recoveryAuthHash?.trim().toLowerCase();
+    const recoveryAuthPublicKey = body.recoveryAuthPublicKey?.trim().toLowerCase();
     const backendKeyEnvelope = body.backendKeyEnvelope;
     const temporary = body.temporary === true;
 
-    if (!isValidRecoveryAuthHash(recoveryAuthHash) || !isValidBackendKeyEnvelope(backendKeyEnvelope)) {
+    if (!isValidRecoveryAuthPublicKey(recoveryAuthPublicKey) || !isValidBackendKeyEnvelope(backendKeyEnvelope)) {
       return NextResponse.json({ success: false, error: "Invalid registration payload" }, { status: 400 });
     }
     if (
@@ -32,7 +32,7 @@ export async function POST(req: Request) {
     const now = new Date();
     const expiresAt = temporary ? new Date(now.getTime() + 24 * 60 * 60 * 1000) : null;
     const result = await users.insertOne({
-      recoveryAuthHash,
+      recoveryAuthPublicKey,
       backendKeyEnvelope,
       isTemporary: temporary,
       expiresAt,

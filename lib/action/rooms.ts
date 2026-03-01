@@ -1,7 +1,10 @@
+import { fetchWithAutoSession } from "@/lib/action/authFetch";
+
 export async function joinRoomMembership(socialId: string, roomId: string): Promise<{ success: boolean; error?: string }> {
   try {
-    const response = await fetch("/api/rooms/join", {
+    const response = await fetchWithAutoSession("/api/rooms/join", {
       method: "POST",
+      socialId,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ socialId, roomId }),
     });

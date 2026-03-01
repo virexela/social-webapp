@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabaseConnection, getPushSubscriptionsCollection } from "@/lib/db/database";
 import { sendWebPush } from "@/lib/server/vapid";
+import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
 
 interface TestPushPayload {
   socialId: string;
@@ -13,6 +14,9 @@ export async function POST(req: NextRequest) {
     if (!socialId) {
       return NextResponse.json({ success: false, error: "socialId is required" }, { status: 400 });
     }
+
+    const authError = await validateUserAuthenticationOrRespond(req, socialId);
+    if (authError) return authError;
 
     await ensureDatabaseConnection();
     const subsCol = getPushSubscriptionsCollection();
