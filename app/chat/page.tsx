@@ -103,18 +103,25 @@ export default function ChatPage() {
     if (loadedHistoryKeyRef.current === historyKey) return;
     loadedHistoryKeyRef.current = historyKey;
 
+    // Only load from DB if contact doesn't already have messages (from localStorage persistence)
+    const hasLoadedMessages = contact.messages && contact.messages.length > 0;
+    if (hasLoadedMessages) return;
+
     let cancelled = false;
     (async () => {
       if (!socialId) return;
       const history = await getMessagesFromDB(contact.roomId, contact.conversationKey, socialId);
       if (!history.success || !history.messages || cancelled) return;
-      replaceMessages(contact.conversationKey, history.messages);
+      // Only replace if we actually got messages from DB
+      if (history.messages.length > 0) {
+        replaceMessages(contact.conversationKey, history.messages);
+      }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [contact?.roomId, contact?.conversationKey, replaceMessages, socialId]);
+  }, [contact?.roomId, contact?.conversationKey, replaceMessages, socialId, contact?.messages?.length]);
 
   useEffect(() => {
     if (!contact) return;
