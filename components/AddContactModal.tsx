@@ -155,17 +155,40 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
           throw new Error("Camera view not ready");
         }
 
-        const reader = new BrowserQRCodeReader();
-        const controls = await reader.decodeFromVideoDevice(undefined, video, (result, _error, controlsFromCb) => {
-          if (!result) return;
+        video.setAttribute("autoplay", "true");
+        video.setAttribute("playsinline", "true");
 
-          const text = result.getText();
+        const reader = new BrowserQRCodeReader();
+
+        const onScanResult = (result: { getText: () => string } | undefined, _error: unknown, controlsFromCb: IScannerControls) => {
+          if (!result) return;
+          const text = result.getText().trim();
+          if (!text) return;
+
           setPastedInvite(text);
           setScanningQR(false);
           setError("");
           controlsFromCb.stop();
           scanControlsRef.current = null;
-        });
+        };
+
+        let controls: IScannerControls;
+        try {
+          controls = await reader.decodeFromConstraints(
+            {
+              audio: false,
+              video: {
+                facingMode: { ideal: "environment" },
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+              },
+            },
+            video,
+            onScanResult
+          );
+        } catch {
+          controls = await reader.decodeFromVideoDevice(undefined, video, onScanResult);
+        }
 
         if (cancelled) {
           controls.stop();
@@ -462,7 +485,7 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
                     <div className="space-y-3">
                       <div className="flex justify-center bg-gray-50 dark:bg-gray-950 p-4">
                         {inviteString && (
-                          <QRCodeCanvas value={inviteString} size={200} includeMargin={false} />
+                          <QRCodeCanvas value={inviteString} size={220} includeMargin={true} level="M" />
                         )}
                       </div>
                       <button

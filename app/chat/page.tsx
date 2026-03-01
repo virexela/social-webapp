@@ -60,6 +60,9 @@ export default function ChatPage() {
     () => (roomId ? contacts.find((c) => c.roomId === roomId) : undefined),
     [contacts, roomId]
   );
+  const contactRoomId = contact?.roomId;
+  const contactConversationKey = contact?.conversationKey;
+  const contactMessages = contact?.messages;
 
   const messages = contact?.messages ?? EMPTY_MESSAGES;
 
@@ -90,31 +93,34 @@ export default function ChatPage() {
   }, [router, socialId]);
 
   useEffect(() => {
-    if (!contact) {
+    if (!contactRoomId || !contactConversationKey) {
       loadedHistoryKeyRef.current = "";
       return;
     }
 
+    const roomIdForEffect = contactRoomId;
+    const conversationKeyForEffect = contactConversationKey;
+    const localMessages = contactMessages ?? [];
+
     if (socialId) {
-      void joinRoomMembership(socialId, contact.roomId);
+      void joinRoomMembership(socialId, roomIdForEffect);
     }
 
-    const historyKey = `${socialId}:${contact.roomId}`;
+    const historyKey = `${socialId}:${roomIdForEffect}`;
     if (loadedHistoryKeyRef.current === historyKey) return;
     loadedHistoryKeyRef.current = historyKey;
 
     let cancelled = false;
     (async () => {
       if (!socialId) return;
-      const history = await getMessagesFromDB(contact.roomId, contact.conversationKey, socialId);
+      const history = await getMessagesFromDB(roomIdForEffect, conversationKeyForEffect, socialId);
       if (!history.success || !history.messages || cancelled) return;
-      const localMessages = contact.messages ?? [];
       if (history.messages.length === 0) {
         // Keep local/persisted history when DB has no decryptable rows.
         if (localMessages.length > 0) {
           return;
         }
-        replaceMessages(contact.conversationKey, []);
+        replaceMessages(conversationKeyForEffect, []);
         return;
       }
 
@@ -127,7 +133,7 @@ export default function ChatPage() {
       });
 
       replaceMessages(
-        contact.conversationKey,
+        conversationKeyForEffect,
         Array.from(mergedById.values()).sort((a, b) => a.timestamp - b.timestamp)
       );
     })();
@@ -135,7 +141,7 @@ export default function ChatPage() {
     return () => {
       cancelled = true;
     };
-  }, [contact, replaceMessages, socialId]);
+  }, [contactRoomId, contactConversationKey, contactMessages, replaceMessages, socialId]);
 
   useEffect(() => {
     if (!contact) return;
@@ -145,11 +151,14 @@ export default function ChatPage() {
   }, [contact]);
 
   useEffect(() => {
-    if (!contact) {
+    if (!contactRoomId || !contactConversationKey) {
       socketRef.current?.close();
       socketRef.current = null;
       return;
     }
+
+    const roomIdForEffect = contactRoomId;
+    const conversationKeyForEffect = contactConversationKey;
 
     const handleMsg = (msg: unknown) => {
       if (!msg || typeof msg !== "object" || !("ciphertext" in msg)) return;
@@ -157,7 +166,7 @@ export default function ChatPage() {
 
       void (async () => {
         try {
-          const decrypted = await decryptTransportMessage(ciphertext, contact.conversationKey);
+          const decrypted = await decryptTransportMessage(ciphertext, conversationKeyForEffect);
           let payload: EncryptedPayload;
           try {
             const parsed = JSON.parse(decrypted) as EncryptedPayload;
@@ -166,21 +175,21 @@ export default function ChatPage() {
             payload = { type: "chat", messageId: "msg_" + Date.now(), text: decrypted };
           }
 
-          if (payload.type === "contact_removed" && payload.roomId === contact.roomId) {
-            removeContact(contact.roomId);
+          if (payload.type === "contact_removed" && payload.roomId === roomIdForEffect) {
+            removeContact(roomIdForEffect);
             setSelectedContactId(null);
-            await deleteMessagesForRoom(contact.roomId);
+            await deleteMessagesForRoom(roomIdForEffect);
             const socialId = socialIdRef.current;
             if (socialId) {
-              await deleteContactFromDB(socialId, contact.roomId);
+              await deleteContactFromDB(socialId, roomIdForEffect);
             }
             router.replace("/");
             return;
           }
 
-          if (payload.type === "message_deleted" && payload.roomId === contact.roomId) {
-            removeMessage(contact.conversationKey, payload.messageId);
-            await deleteMessageForRoom(contact.roomId, payload.messageId);
+          if (payload.type === "message_deleted" && payload.roomId === roomIdForEffect) {
+            removeMessage(conversationKeyForEffect, payload.messageId);
+            await deleteMessageForRoom(roomIdForEffect, payload.messageId);
             return;
           }
 
@@ -193,7 +202,7 @@ export default function ChatPage() {
               ? {
                   id: payload.messageId,
                   content: payload.fileName,
-                  conversationKey: contact.conversationKey,
+                  conversationKey: conversationKeyForEffect,
                   timestamp: Date.now(),
                   isOwn: false,
                   kind: "file",
@@ -204,15 +213,15 @@ export default function ChatPage() {
               : {
                   id: payload.messageId,
                   content: payload.text,
-                  conversationKey: contact.conversationKey,
+                  conversationKey: conversationKeyForEffect,
                   timestamp: Date.now(),
                   isOwn: false,
                   kind: "text",
                 };
 
-          addMessage(incoming, contact.conversationKey);
+          addMessage(incoming, conversationKeyForEffect);
           if (document.hidden || !document.hasFocus()) {
-            incrementUnread(contact.roomId);
+            incrementUnread(roomIdForEffect);
           }
         } catch {
           // ignore undecryptable payload
@@ -230,7 +239,17 @@ export default function ChatPage() {
       socketRef.current?.close();
       socketRef.current = null;
     };
-  }, [contact, addMessage, incrementUnread, removeContact, removeMessage, roomId, router, setSelectedContactId]);
+  }, [
+    contactRoomId,
+    contactConversationKey,
+    addMessage,
+    incrementUnread,
+    removeContact,
+    removeMessage,
+    roomId,
+    router,
+    setSelectedContactId,
+  ]);
 
   const sendEncryptedPayload = useCallback(
     async (payload: EncryptedPayload) => {
@@ -239,11 +258,21 @@ export default function ChatPage() {
       if (!socket) {
         socket = new RelaySocket(buildRelayChatUrl(roomId!));
         socketRef.current = socket;
-        await socket.connectAndWaitOpen();
       }
 
+      // Azure App Service can suspend websocket workers; allow extra wake-up time and one reconnect retry.
+      await socket.connectAndWaitOpen(20_000);
+
       const ciphertext = await encryptTransportMessage(JSON.stringify(payload), contact.conversationKey);
-      socket.sendJson({ ciphertext });
+      try {
+        socket.sendJson({ ciphertext });
+      } catch {
+        socket.close();
+        const retrySocket = new RelaySocket(buildRelayChatUrl(roomId!));
+        socketRef.current = retrySocket;
+        await retrySocket.connectAndWaitOpen(20_000);
+        retrySocket.sendJson({ ciphertext });
+      }
 
       const socialId = socialIdRef.current;
       if (socialId && (payload.type === "chat" || payload.type === "file")) {

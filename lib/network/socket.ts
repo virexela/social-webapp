@@ -75,7 +75,7 @@ export class RelaySocket {
     };
   }
 
-  async connectAndWaitOpen(timeoutMs = 5000): Promise<void> {
+  async connectAndWaitOpen(timeoutMs = 15000): Promise<void> {
     if (this.state === "open") return;
 
     this.connect();
