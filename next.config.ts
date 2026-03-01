@@ -1,30 +1,22 @@
 import type { NextConfig } from "next";
-import crypto from "crypto";
 
 const isProd = process.env.NODE_ENV === "production";
-
-// Generate nonce for each request to enable CSP without unsafe-inline
-function generateCspNonce(): string {
-  return crypto.randomBytes(16).toString("base64");
-}
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
   output: "standalone",
   async headers() {
-    const nonce = generateCspNonce();
-
     const cspHeaders = [
       "default-src 'self'",
       "base-uri 'self'",
       "frame-ancestors 'none'",
       "img-src 'self' data: blob:",
       "font-src 'self' data:",
-      `style-src 'self' 'nonce-${nonce}'`,
-      `script-src 'self' 'nonce-${nonce}'`,
-      // Restrict connect-src to HTTPS only (no ws:// unencrypted websockets)
-      `connect-src 'self' https: wss: ${process.env.NEXT_PUBLIC_RELAY_WS_URL || ""}`,
+      "style-src 'self' 'unsafe-inline'",
+      `script-src 'self' 'unsafe-inline'${isProd ? "" : " 'unsafe-eval'"}`,
+      // Allow ws: only in development for local relay/dev server workflows.
+      `connect-src 'self' https: wss:${isProd ? "" : " ws:"} ${process.env.NEXT_PUBLIC_RELAY_WS_URL || ""}`,
       "worker-src 'self' blob:",
       "object-src 'none'",
       "form-action 'self'",
@@ -48,8 +40,6 @@ const nextConfig: NextConfig = {
         headers: [
           ...securityHeaders,
           ...(isProd ? [{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains; preload" }] : []),
-          // Required for nonce to work properly in Next.js
-          { key: "X-CSP-Nonce", value: nonce },
         ],
       },
     ];

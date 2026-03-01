@@ -55,15 +55,12 @@ export class RelaySocket {
       for (const l of this.msgListeners) l(payload);
     };
 
-    this.ws.onclose = (evt) => {
+    this.ws.onclose = () => {
       this.state = "closed";
       if (!this.allowReconnect && this.openWaiters.length > 0) {
         const waiters = this.openWaiters;
         this.openWaiters = [];
-        const message = evt.reason
-          ? `WebSocket closed before open: ${evt.reason}`
-          : `WebSocket closed before open (code ${evt.code})`;
-        for (const w of waiters) w.reject(new Error(message));
+        for (const w of waiters) w.resolve();
       }
       if (this.allowReconnect) {
         this.scheduleReconnect();
@@ -111,7 +108,7 @@ export class RelaySocket {
     if (this.openWaiters.length > 0) {
       const waiters = this.openWaiters;
       this.openWaiters = [];
-      for (const w of waiters) w.reject(new Error("WebSocket closed"));
+      for (const w of waiters) w.resolve();
     }
     this.state = "closed";
     this.ws?.close();
