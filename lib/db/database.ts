@@ -84,13 +84,25 @@ async function ensureIndexes(): Promise<void> {
       for (const idx of userIndexes) {
         const keyDoc = idx.key as Record<string, number> | undefined;
         if (keyDoc?.publicKey === 1) {
-          await users.dropIndex(idx.name);
+          try {
+            await users.dropIndex(idx.name);
+          } catch {
+            // ignore races where index was already dropped
+          }
         }
         if (keyDoc?.recoveryAuthHash === 1) {
-          await users.dropIndex(idx.name);
+          try {
+            await users.dropIndex(idx.name);
+          } catch {
+            // ignore races where index was already dropped
+          }
         }
         if (keyDoc?.recoveryAuthPublicKey === 1) {
-          await users.dropIndex(idx.name);
+          try {
+            await users.dropIndex(idx.name);
+          } catch {
+            // ignore races where index was already dropped
+          }
         }
       }
 
@@ -130,8 +142,12 @@ async function ensureIndexes(): Promise<void> {
       ]);
     })();
   }
-
-  await globalWithMongo.__mongoIndexInitPromise;
+  try {
+    await globalWithMongo.__mongoIndexInitPromise;
+  } catch (err) {
+    globalWithMongo.__mongoIndexInitPromise = undefined;
+    throw err;
+  }
 }
 
 async function runPeriodicMaintenance(): Promise<void> {

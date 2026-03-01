@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabaseConnection, getContactsCollection, getRoomMembersCollection } from "@/lib/db/database";
 import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
+import { getSessionSocialIdFromRequest } from "@/lib/server/sessionAuth";
 import { isValidSocialId, isValidRoomId, isValidEncryptedContactSize } from "@/lib/validation/schemas";
 
 interface SaveContactPayload {
@@ -14,13 +15,24 @@ const MAX_CONTACT_BYTES = 200_000;
 
 export async function POST(req: NextRequest) {
   try {
-    const body = (await req.json()) as SaveContactPayload;
-    const socialId = body.socialId?.trim();
+    let body: Partial<SaveContactPayload> = {};
+    try {
+      body = (await req.json()) as SaveContactPayload;
+    } catch {
+      body = {};
+    }
+
+    const sessionSocialId = await getSessionSocialIdFromRequest(req);
+    const socialId = body.socialId?.trim() || sessionSocialId;
     const roomId = body.roomId?.trim();
     const encryptedContact = body.encryptedContact?.trim();
 
     if (!socialId || !roomId || !encryptedContact) {
       return NextResponse.json({ success: false, error: "socialId, roomId and encryptedContact are required" }, { status: 400 });
+    }
+
+    if (sessionSocialId && socialId !== sessionSocialId) {
+      return NextResponse.json({ success: false, error: "Forbidden: Cannot write contacts as a different user" }, { status: 403 });
     }
 
     // ✅ IMPROVED: Use standardized validation
@@ -78,7 +90,8 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
-    const socialId = req.nextUrl.searchParams.get("socialId")?.trim();
+    const sessionSocialId = await getSessionSocialIdFromRequest(req);
+    const socialId = req.nextUrl.searchParams.get("socialId")?.trim() || sessionSocialId;
     if (!socialId) {
       return NextResponse.json({ success: false, error: "socialId is required" }, { status: 400 });
     }
