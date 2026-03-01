@@ -23,6 +23,7 @@ export default function Home() {
   const [contactsLoading] = useState(false);
 
   const contacts = useSocialStore((s) => s.contacts);
+  const _hydrated = useSocialStore((s) => s._hydrated);
   const setContacts = useSocialStore((s) => s.setContacts);
   const setSelectedContactId = useSocialStore((s) => s.setSelectedContactId);
   const removeContact = useSocialStore((s) => s.removeContact);
@@ -81,8 +82,8 @@ export default function Home() {
       return;
     }
 
-    // Only load from DB if store is empty to prevent overwriting persisted contacts
-    if (contacts.length === 0) {
+    // Only load from DB if store is empty AND hydrated to prevent overwriting persisted contacts
+    if (_hydrated && contacts.length === 0) {
       void (async () => {
         const result = await getContactsFromDB(socialId);
         if (result.success && result.contacts && result.contacts.length > 0) {
@@ -90,7 +91,7 @@ export default function Home() {
         }
       })();
     }
-  }, [router, setContacts, contacts.length]);
+  }, [router, setContacts, contacts.length, _hydrated]);
 
   useEffect(() => {
     if (!(typeof window !== "undefined" && "serviceWorker" in navigator)) return;

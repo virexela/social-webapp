@@ -45,6 +45,7 @@ async function fileToBase64(file: File): Promise<string> {
 export default function ChatPage() {
   const router = useRouter();
   const roomId = useSocialStore((s) => s.selectedContactId);
+  const _hydrated = useSocialStore((s) => s._hydrated);
 
   const [message, setMessage] = useState("");
   const [error, setError] = useState<string>("");
@@ -100,6 +101,11 @@ export default function ChatPage() {
       return;
     }
 
+    // Wait for store hydration to ensure we have persisted messages
+    if (!_hydrated) {
+      return;
+    }
+
     const roomIdForEffect = contactRoomId;
     const conversationKeyForEffect = contactConversationKey;
     const localMessages = contactMessages ?? [];
@@ -143,7 +149,7 @@ export default function ChatPage() {
     return () => {
       cancelled = true;
     };
-  }, [contactRoomId, contactConversationKey, contactMessages, replaceMessages, socialId]);
+  }, [contactRoomId, contactConversationKey, contactMessages, replaceMessages, socialId, _hydrated]);
 
   useEffect(() => {
     if (!contact) return;

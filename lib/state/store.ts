@@ -36,6 +36,7 @@ export interface Contact {
 interface SocialState {
   contacts: Contact[];
   selectedContactId: string | null;
+  _hydrated: boolean;
 
   setSelectedContactId: (id: string | null) => void;
   restoreRecoveredState: (
@@ -59,6 +60,7 @@ export const useSocialStore = create<SocialState>()(
     (set) => ({
       contacts: [],
       selectedContactId: null,
+      _hydrated: false,
 
       setSelectedContactId: (id) => set({ selectedContactId: id }),
       restoreRecoveredState: (recoveredContacts) =>
@@ -193,6 +195,11 @@ export const useSocialStore = create<SocialState>()(
         contacts: state.contacts,
         selectedContactId: state.selectedContactId,
       }),
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          state._hydrated = true;
+        }
+      },
     }
   )
 );
