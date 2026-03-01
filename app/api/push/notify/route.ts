@@ -47,11 +47,15 @@ export async function POST(req: NextRequest) {
       const endpoint = String(sub.endpoint ?? "");
       if (!endpoint) continue;
 
-      const result = await sendWebPush(endpoint);
-      if (result.ok) {
-        sent += 1;
-      } else if (result.status === 404 || result.status === 410) {
-        await subsCol.deleteOne({ socialId: sub.socialId, endpoint });
+      try {
+        const result = await sendWebPush(endpoint);
+        if (result.ok) {
+          sent += 1;
+        } else if (result.status === 404 || result.status === 410) {
+          await subsCol.deleteOne({ socialId: sub.socialId, endpoint });
+        }
+      } catch {
+        // best-effort: notification failures should not break message flow
       }
     }
 

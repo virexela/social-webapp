@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureDatabaseConnection, getContactsCollection } from "@/lib/db/database";
+import { ensureDatabaseConnection, getContactsCollection, getRoomMembersCollection } from "@/lib/db/database";
 import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
 import { isValidSocialId, isValidRoomId, isValidEncryptedContactSize } from "@/lib/validation/schemas";
 
@@ -49,12 +49,23 @@ export async function POST(req: NextRequest) {
 
     await ensureDatabaseConnection();
     const contacts = getContactsCollection();
+    const roomMembers = getRoomMembersCollection();
 
     await contacts.updateOne(
       { socialId, roomId },
       {
         $set: { socialId, roomId, encryptedContact, updatedAt: new Date() },
         $setOnInsert: { createdAt: new Date() },
+      },
+      { upsert: true }
+    );
+
+    const now = new Date();
+    await roomMembers.updateOne(
+      { socialId, roomId },
+      {
+        $set: { socialId, roomId, updatedAt: now },
+        $setOnInsert: { createdAt: now },
       },
       { upsert: true }
     );

@@ -1,6 +1,7 @@
 import { ChatMessage } from "@/lib/state/store";
 import { decryptTransportMessage, encryptTransportMessage } from "@/lib/protocol/transportCrypto";
 import { fetchWithAutoSession } from "@/lib/action/authFetch";
+import { joinRoomMembership } from "@/lib/action/rooms";
 
 export interface PersistMessageInput {
   senderSocialId: string;
@@ -53,12 +54,24 @@ export async function getMessagesFromDB(
 ): Promise<{ success: boolean; messages?: ChatMessage[]; error?: string }> {
   try {
     const params = new URLSearchParams({ roomId, socialId: currentSocialId });
-    const response = await fetchWithAutoSession(`/api/messages?${params.toString()}`, {
+    let response = await fetchWithAutoSession(`/api/messages?${params.toString()}`, {
       method: "GET",
       socialId: currentSocialId,
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
     });
+
+    if (!response.ok && response.status === 403) {
+      const joined = await joinRoomMembership(currentSocialId, roomId);
+      if (joined.success) {
+        response = await fetchWithAutoSession(`/api/messages?${params.toString()}`, {
+          method: "GET",
+          socialId: currentSocialId,
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+        });
+      }
+    }
 
     if (!response.ok) {
       const text = await response.text();
