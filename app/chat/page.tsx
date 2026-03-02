@@ -7,7 +7,7 @@ import { motion } from "framer-motion";
 import { ArrowLeft, Send, MessageSquare, Trash2, Paperclip } from "lucide-react";
 import { ChatMessage, useSocialStore } from "@/lib/state/store";
 import { RelaySocket } from "@/lib/network/socket";
-import { buildRelayChatUrl } from "@/lib/utils/socket";
+import { buildRelayChatUrl, buildRelayChatUrlCandidates } from "@/lib/utils/socket";
 import {
   deleteMessageForRoom,
   deleteMessagesForRoom,
@@ -116,13 +116,16 @@ export default function ChatPage() {
 
     const historyKey = `${socialId}:${roomIdForEffect}`;
     if (loadedHistoryKeyRef.current === historyKey) return;
-    loadedHistoryKeyRef.current = historyKey;
 
     let cancelled = false;
     (async () => {
       if (!socialId) return;
       const history = await getMessagesFromDB(roomIdForEffect, conversationKeyForEffect, socialId);
-      if (!history.success || !history.messages || cancelled) return;
+      if (!history.success || !history.messages || cancelled) {
+        loadedHistoryKeyRef.current = "";
+        return;
+      }
+      loadedHistoryKeyRef.current = historyKey;
       if (history.messages.length === 0) {
         // Keep local/persisted history when DB has no decryptable rows.
         if (localMessages.length > 0) {
@@ -240,7 +243,7 @@ export default function ChatPage() {
       })();
     };
 
-    const socket = new RelaySocket(buildRelayChatUrl(roomId!), handleMsg);
+    const socket = new RelaySocket(buildRelayChatUrlCandidates(roomId!), handleMsg);
     socketRef.current = socket;
     socket.connectAndWaitOpen().catch(() => {
       // ignore warm-up failures during rapid remount
@@ -267,7 +270,7 @@ export default function ChatPage() {
       if (!contact) return;
       let socket = socketRef.current;
       if (!socket) {
-        socket = new RelaySocket(buildRelayChatUrl(roomId!));
+        socket = new RelaySocket(buildRelayChatUrlCandidates(roomId!));
         socketRef.current = socket;
       }
 
@@ -279,7 +282,7 @@ export default function ChatPage() {
         socket.sendJson({ ciphertext });
       } catch {
         socket.close();
-        const retrySocket = new RelaySocket(buildRelayChatUrl(roomId!));
+        const retrySocket = new RelaySocket(buildRelayChatUrlCandidates(roomId!));
         socketRef.current = retrySocket;
         await retrySocket.connectAndWaitOpen(20_000);
         retrySocket.sendJson({ ciphertext });
@@ -307,11 +310,14 @@ export default function ChatPage() {
       setMessageStatus(contact.conversationKey, queuedItem.message.id, "sending");
       try {
         await sendEncryptedPayload(queuedItem.payload);
-        await saveMessageToDB({
+        const persisted = await saveMessageToDB({
           senderSocialId: socialId,
           roomId: contact.roomId,
           message: { ...queuedItem.message, status: "sent" },
         });
+        if (!persisted.success) {
+          throw new Error(persisted.error || "Failed to persist queued message");
+        }
         setMessageStatus(contact.conversationKey, queuedItem.message.id, "sent");
         dequeueOutboxItem(queuedItem.message.id);
       } catch {
@@ -363,16 +369,19 @@ export default function ChatPage() {
 
     try {
       await sendEncryptedPayload({ type: "chat", messageId: id, text: message });
-      setMessageStatus(contact.conversationKey, id, "sent");
-      dequeueOutboxItem(id);
       const socialId = socialIdRef.current;
       if (socialId) {
-        await saveMessageToDB({
+        const persisted = await saveMessageToDB({
           senderSocialId: socialId,
           roomId: contact.roomId,
           message: { ...newMessage, status: "sent" },
         });
+        if (!persisted.success) {
+          throw new Error(persisted.error || "Failed to persist message");
+        }
       }
+      setMessageStatus(contact.conversationKey, id, "sent");
+      dequeueOutboxItem(id);
     } catch (err) {
       setMessageStatus(contact.conversationKey, id, "failed");
       const socialId = socialIdRef.current;
@@ -422,32 +431,35 @@ export default function ChatPage() {
           mimeType: newMessage.mimeType!,
           fileDataBase64,
         });
-        setMessageStatus(contact.conversationKey, id, "sent");
         const socialId = socialIdRef.current;
         if (socialId) {
-          await saveMessageToDB({
+          const persisted = await saveMessageToDB({
             senderSocialId: socialId,
             roomId: contact.roomId,
             message: { ...newMessage, status: "sent" },
           });
+          if (!persisted.success) {
+            throw new Error(persisted.error || "Failed to persist attachment");
+          }
         }
-          dequeueOutboxItem(id);
+        setMessageStatus(contact.conversationKey, id, "sent");
+        dequeueOutboxItem(id);
       } catch (err) {
         setMessageStatus(contact.conversationKey, id, "failed");
-          enqueueOutboxItem({
-            roomId: contact.roomId,
-            payload: {
-              type: "file",
-              messageId: id,
-              fileName: newMessage.fileName!,
-              mimeType: newMessage.mimeType!,
-              fileDataBase64,
-            },
-            message: { ...newMessage, status: "failed" },
-            createdAt: Date.now(),
-          });
+        enqueueOutboxItem({
+          roomId: contact.roomId,
+          payload: {
+            type: "file",
+            messageId: id,
+            fileName: newMessage.fileName!,
+            mimeType: newMessage.mimeType!,
+            fileDataBase64,
+          },
+          message: { ...newMessage, status: "failed" },
+          createdAt: Date.now(),
+        });
         console.error("Failed to send attachment:", err);
-          setError("Attachment queued. It will send automatically when connection is back.");
+        setError("Attachment queued. It will send automatically when connection is back.");
       }
     },
     [contact, addMessage, sendEncryptedPayload, setMessageStatus]

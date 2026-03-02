@@ -7,6 +7,7 @@ import { LogOut, Trash2, Cloud, Bell, ChevronLeft, Sun, Moon } from "lucide-reac
 import { useTheme } from "next-themes";
 import clsx from "clsx";
 import { clearRemoteData, deleteRemoteUser } from "@/lib/action/account";
+import { useSocialStore } from "@/lib/state/store";
 import {
   getPushSubscriptionStatus,
   registerPushSubscription,
@@ -16,6 +17,7 @@ import {
 export default function SettingsPage() {
   const router = useRouter();
   const social_id = typeof window !== "undefined" ? localStorage.getItem("social_id") : null;
+  const resetState = useSocialStore((s) => s.resetState);
 
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(() => {
     try {
@@ -49,7 +51,9 @@ export default function SettingsPage() {
     setBusy(true);
     setActionError("");
     try {
+      resetState();
       localStorage.clear();
+      sessionStorage.clear();
       router.replace("/login");
     } catch (e) {
       setActionError((e as Error).message || "Logout failed");
@@ -121,6 +125,7 @@ export default function SettingsPage() {
 
   async function clearClientState() {
     if (typeof window !== "undefined") {
+      resetState();
       window.localStorage.clear();
       window.sessionStorage.clear();
     }
@@ -128,6 +133,7 @@ export default function SettingsPage() {
 
   function clearLocalConversationData() {
     if (typeof window === "undefined") return;
+    resetState();
     window.localStorage.removeItem("social_store_v1");
     window.sessionStorage.clear();
   }

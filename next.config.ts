@@ -20,7 +20,7 @@ const nextConfig: NextConfig = {
       "worker-src 'self' blob:",
       "object-src 'none'",
       "form-action 'self'",
-      "upgrade-insecure-requests",
+      ...(isProd ? ["upgrade-insecure-requests"] : []),
     ];
 
     const securityHeaders = [

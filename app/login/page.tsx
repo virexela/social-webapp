@@ -7,6 +7,7 @@ import { motion } from "framer-motion";
 import { Button, Input, Logo } from "@/components";
 import { registerUser } from "@/lib/action/user";
 import { authenticateSessionWithRecovery } from "@/lib/action/session";
+import { useSocialStore } from "@/lib/state/store";
 import { hexToBytes } from "@/lib/protocol/bytes";
 import { createBackendKeyEnvelope, deriveRecoveryAuthPublicKey } from "@/lib/protocol/recoveryVault";
 
@@ -19,6 +20,7 @@ function bytesToHex(bytes: Uint8Array): string {
 function LoginPageContent() {
   const router = useRouter();
   const params = useSearchParams();
+  const resetState = useSocialStore((s) => s.resetState);
 
   const next = params.get("next") || "/";
   const [showRecover, setShowRecover] = useState(false);
@@ -44,6 +46,7 @@ function LoginPageContent() {
   }, [trimmedRecovery]);
 
   function storeRecoveryCredentials(recoveryHex: string, socialId: string, opts?: { temporary?: boolean; expiresAt?: string }) {
+    resetState();
     localStorage.setItem("recovery_key", recoveryHex);
     localStorage.setItem("social_id", socialId);
     if (opts?.temporary) {

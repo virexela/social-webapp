@@ -9,7 +9,7 @@ export function getRelayWsUrl(): string {
   let base =
     process.env.NEXT_PUBLIC_RELAY_WS_URL ??
     process.env.NEXT_PUBLIC_WS_URL ??
-    "ws://localhost:3001/ws";
+    "ws://localhost:8080/ws";
 
   if (isDev && typeof window !== "undefined") {
     const host = window.location.hostname;
@@ -22,7 +22,7 @@ export function getRelayWsUrl(): string {
         }
       } catch {
         // fallback when the env value isn’t a valid URL
-        base = `ws://${host}:3001`;
+        base = `ws://${host}:8080`;
       }
     }
   }
@@ -49,8 +49,11 @@ export function getRelayWsUrlCandidates(): string[] {
 
   const host = window.location.hostname || "localhost";
   const hosts = [host, "127.0.0.1", "localhost"];
-  const candidates = hosts.map(h => `ws://${h}:3001/ws`);
+  const candidates = [
+    ...hosts.map((h) => `ws://${h}:8080/ws`),
+    ...hosts.map((h) => `ws://${h}:3001/ws`),
+  ];
 
   // prepend primary and dedupe via Set to preserve order
-  return Array.from(new Set([primary, ...candidates].map(ensureWsPath)));
+  return Array.from(new Set([...candidates, primary].map(ensureWsPath)));
 }

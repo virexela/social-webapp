@@ -1,4 +1,4 @@
-import { getRelayWsUrl } from "@/lib/network/relayUrl";
+import { getRelayWsUrl, getRelayWsUrlCandidates } from "@/lib/network/relayUrl";
 
 export type InviteSocketHandlers = {
   onInviteAccepted?: (by: string) => void;
@@ -12,7 +12,16 @@ type InviteJoinOptions = {
 };
 
 function makeWsUrl(path: string): string {
-  const url = new URL(getRelayWsUrl());
+  const candidateBase = getRelayWsUrlCandidates()[0] ?? getRelayWsUrl();
+  const url = new URL(candidateBase);
+  url.pathname = path;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function makeWsUrlFromBase(base: string, path: string): string {
+  const url = new URL(base);
   url.pathname = path;
   url.search = "";
   url.hash = "";
@@ -54,4 +63,9 @@ export function joinInviteRoom(
 // build a relay websocket url for chat (user path)
 export function buildRelayChatUrl(roomId: string): string {
   return makeWsUrl(`/ws/${encodeURIComponent(roomId)}`);
+}
+
+export function buildRelayChatUrlCandidates(roomId: string): string[] {
+  const path = `/ws/${encodeURIComponent(roomId)}`;
+  return getRelayWsUrlCandidates().map((base) => makeWsUrlFromBase(base, path));
 }

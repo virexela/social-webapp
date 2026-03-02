@@ -7,28 +7,48 @@ interface StoredContactRecord {
   encryptedContact: string;
 }
 
+const lastContactSnapshotByKey = new Map<string, string>();
+const inFlightSaveByKey = new Map<string, Promise<{ success: boolean; error?: string }>>();
+const inFlightSnapshotByKey = new Map<string, string>();
+
 export async function saveContactToDB(socialId: string, contact: Contact): Promise<{ success: boolean; error?: string }> {
   try {
+    const contactPayload = {
+      nickname: contact.nickname,
+      status: contact.status,
+      conversationKey: contact.conversationKey,
+      roomId: contact.roomId,
+      createdAt: contact.createdAt,
+      unreadCount: contact.unreadCount ?? 0,
+      lastOpenedAt: contact.lastOpenedAt ?? 0,
+      latestMessage: contact.latestMessage
+        ? {
+            id: contact.latestMessage.id,
+            content: contact.latestMessage.content,
+            timestamp: contact.latestMessage.timestamp,
+            isOwn: contact.latestMessage.isOwn,
+            kind: contact.latestMessage.kind ?? "text",
+            fileName: contact.latestMessage.fileName,
+          }
+        : null,
+    };
+
+    const dedupeKey = `${socialId}:${contact.roomId}`;
+    const snapshot = JSON.stringify(contactPayload);
+    const lastSnapshot = lastContactSnapshotByKey.get(dedupeKey);
+    if (lastSnapshot === snapshot) {
+      return { success: true };
+    }
+
+    const existingInFlight = inFlightSaveByKey.get(dedupeKey);
+    const inFlightSnapshot = inFlightSnapshotByKey.get(dedupeKey);
+    if (existingInFlight && inFlightSnapshot === snapshot) {
+      return existingInFlight;
+    }
+
+    const persistPromise = (async (): Promise<{ success: boolean; error?: string }> => {
     const encryptedContact = await encryptMessageForStorage(
-      JSON.stringify({
-        nickname: contact.nickname,
-        status: contact.status,
-        conversationKey: contact.conversationKey,
-        roomId: contact.roomId,
-        createdAt: contact.createdAt,
-        unreadCount: contact.unreadCount ?? 0,
-        lastOpenedAt: contact.lastOpenedAt ?? 0,
-        latestMessage: contact.latestMessage
-          ? {
-              id: contact.latestMessage.id,
-              content: contact.latestMessage.content,
-              timestamp: contact.latestMessage.timestamp,
-              isOwn: contact.latestMessage.isOwn,
-              kind: contact.latestMessage.kind ?? "text",
-              fileName: contact.latestMessage.fileName,
-            }
-          : null,
-      })
+      JSON.stringify(contactPayload)
     );
 
     const response = await fetchWithAutoSession("/api/contacts", {
@@ -44,7 +64,21 @@ export async function saveContactToDB(socialId: string, contact: Contact): Promi
     }
 
     const data = await response.json();
-    return { success: Boolean(data?.success), error: data?.error };
+    const result = { success: Boolean(data?.success), error: data?.error };
+    if (result.success) {
+      lastContactSnapshotByKey.set(dedupeKey, snapshot);
+    }
+    return result;
+    })();
+
+    inFlightSaveByKey.set(dedupeKey, persistPromise);
+    inFlightSnapshotByKey.set(dedupeKey, snapshot);
+    try {
+      return await persistPromise;
+    } finally {
+      inFlightSaveByKey.delete(dedupeKey);
+      inFlightSnapshotByKey.delete(dedupeKey);
+    }
   } catch (err) {
     return { success: false, error: (err as Error).message || String(err) };
   }

@@ -8,6 +8,22 @@ export function PwaBootstrap() {
       return;
     }
 
+    if (process.env.NODE_ENV !== "production") {
+      void (async () => {
+        try {
+          const registrations = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(registrations.map((registration) => registration.unregister()));
+          if ("caches" in window) {
+            const keys = await caches.keys();
+            await Promise.all(keys.filter((key) => key.startsWith("social-app-")).map((key) => caches.delete(key)));
+          }
+        } catch {
+          // ignore cleanup errors in development
+        }
+      })();
+      return;
+    }
+
     const register = async () => {
       try {
         await navigator.serviceWorker.register("/sw.js", { scope: "/" });

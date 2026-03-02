@@ -13,11 +13,14 @@ export class RelaySocket {
   private allowReconnect = true;
   private openWaiters: OpenWaiter[] = [];
   private msgListeners: Array<(msg: unknown) => void> = [];
+  private urlIndex = 0;
+  private readonly urls: string[];
 
   constructor(
-    private readonly url: string,
+    urlOrUrls: string | string[],
     onMessage?: (msg: unknown) => void
   ) {
+    this.urls = Array.isArray(urlOrUrls) ? urlOrUrls : [urlOrUrls];
     if (onMessage) this.msgListeners.push(onMessage);
   }
 
@@ -33,7 +36,13 @@ export class RelaySocket {
     this.allowReconnect = true;
     this.state = "connecting";
 
-    this.ws = new WebSocket(this.url);
+    const targetUrl = this.urls[this.urlIndex] ?? this.urls[0];
+    if (!targetUrl) {
+      this.state = "closed";
+      return;
+    }
+
+    this.ws = new WebSocket(targetUrl);
 
     this.ws.onopen = () => {
       this.state = "open";
@@ -122,6 +131,9 @@ export class RelaySocket {
     const delayMs = Math.min(30_000, 250 * 2 ** attempt);
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
+      if (this.urls.length > 1) {
+        this.urlIndex = (this.urlIndex + 1) % this.urls.length;
+      }
       this.connect();
     }, delayMs);
   }
