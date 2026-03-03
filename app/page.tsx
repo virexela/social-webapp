@@ -6,13 +6,13 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Search } from "lucide-react";
 
 import { ContactListItem } from "@/components/ContactListItem";
-import { ContactListSkeleton } from "@/components/ContactListSkeleton";
 import { SettingsMenu } from "@/components/SettingsMenu";
 import { AddContactButton } from "@/components/AddContactModal";
 import { useSocialStore } from "@/lib/state/store";
 import { getContactsFromDB } from "@/lib/action/contacts";
 import { deleteContactFromDB } from "@/lib/action/contacts";
 import { deleteMessagesForRoom } from "@/lib/action/messages";
+import { ackRoomPushNotifications } from "@/lib/action/push";
 
 export default function Home() {
   const router = useRouter();
@@ -20,7 +20,6 @@ export default function Home() {
   const [showSearchBar, setShowSearchBar] = useState(false);
   const [isDesktop, setIsDesktop] = useState(false);
   const touchStartYRef = useRef<number | null>(null);
-  const [contactsLoading] = useState(false);
 
   const contacts = useSocialStore((s) => s.contacts);
   const _hydrated = useSocialStore((s) => s._hydrated);
@@ -28,7 +27,7 @@ export default function Home() {
   const setSelectedContactId = useSocialStore((s) => s.setSelectedContactId);
   const removeContact = useSocialStore((s) => s.removeContact);
   const markContactOpened = useSocialStore((s) => s.markContactOpened);
-  const incrementUnread = useSocialStore((s) => s.incrementUnread);
+  const setUnreadCount = useSocialStore((s) => s.setUnreadCount);
 
   function formatTime(ts?: number) {
     if (!ts) return undefined;
@@ -96,19 +95,43 @@ export default function Home() {
   useEffect(() => {
     if (!(typeof window !== "undefined" && "serviceWorker" in navigator)) return;
 
+    const syncServiceWorkerState = () => {
+      const notifyEnabled = localStorage.getItem("notify") === "1";
+      navigator.serviceWorker.controller?.postMessage({
+        type: "chat_runtime_state",
+        activeRoomId: null,
+        notificationsEnabled: notifyEnabled,
+      });
+    };
+
     const onMessage = (event: MessageEvent) => {
-      if (event.data?.type !== "push_received") return;
-      // We don't receive per-room payloads in push yet, so best-effort unread bump for connected chats.
-      contacts
-        .filter((c) => c.status === "connected")
-        .forEach((c) => incrementUnread(c.roomId));
+      if (event.data?.type !== "push_pending_summary") return;
+      const pending = Array.isArray(event.data?.pending)
+        ? (event.data.pending as Array<{ roomId?: string; unreadCount?: number }>)
+        : [];
+      const pendingRoomIds = new Set<string>();
+      pending.forEach((item) => {
+        const roomId = String(item?.roomId ?? "");
+        if (!roomId) return;
+        pendingRoomIds.add(roomId);
+        setUnreadCount(roomId, Number(item?.unreadCount ?? 0));
+      });
+      const allContacts = useSocialStore.getState().contacts;
+      allContacts.forEach((contact) => {
+        if (!pendingRoomIds.has(contact.roomId)) {
+          setUnreadCount(contact.roomId, 0);
+        }
+      });
     };
 
     navigator.serviceWorker.addEventListener("message", onMessage);
+    syncServiceWorkerState();
+    window.addEventListener("focus", syncServiceWorkerState);
     return () => {
       navigator.serviceWorker.removeEventListener("message", onMessage);
+      window.removeEventListener("focus", syncServiceWorkerState);
     };
-  }, [contacts, incrementUnread]);
+  }, [setUnreadCount]);
 
   // Detect screen size for responsive behavior
   useEffect(() => {
@@ -180,9 +203,7 @@ export default function Home() {
         </div>
 
         <div className="flex-1 overflow-hidden">
-          {contactsLoading ? (
-            <ContactListSkeleton />
-          ) : filteredContacts.length === 0 ? (
+          {filteredContacts.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center px-6 py-12">
               <div className="text-center space-y-4 max-w-sm">
                 <div className="space-y-2">
@@ -195,20 +216,28 @@ export default function Home() {
             </div>
           ) : (
             <div className="divide-y divide-[var(--color-border)]">
-              {contacts.map((contact, index) => {
+              {filteredContacts.map((contact) => {
                 // when a contact is clicked, remember which conversation we want
                 const handleClick = () => {
                   // store the selected contact id (conversation key) in the global state
                   setSelectedContactId(contact.roomId);
                   markContactOpened(contact.roomId);
+                  void ackRoomPushNotifications(contact.roomId);
                   // the chat page reads the ID from the store, no sensitive data in the URL
                   router.push(`/chat`);
                 };
 
                 const latestPreview = contact.latestMessage
-                  ? contact.latestMessage.kind === "file"
-                    ? `File: ${contact.latestMessage.fileName || "Attachment"}`
-                    : contact.latestMessage.content
+                  ? (() => {
+                      const base =
+                        contact.latestMessage.kind === "file"
+                          ? `File: ${contact.latestMessage.fileName || "Attachment"}`
+                          : contact.latestMessage.content;
+                      if (contact.isGroup && contact.latestMessage.senderAlias) {
+                        return `${contact.latestMessage.senderAlias}: ${base}`;
+                      }
+                      return base;
+                    })()
                   : "Tap to chat";
                 const latestTime = formatTime(contact.latestMessage?.timestamp);
 
@@ -225,17 +254,17 @@ export default function Home() {
                 if (contact.status === "pending") {
                   return (
                     <div
-                      key={index}
+                      key={contact.roomId}
                       className="w-full flex items-center gap-4 py-[var(--space-4)] px-[var(--space-6)] border-b border-[var(--color-border)] opacity-70 cursor-pointer"
                       onClick={handleClick}
                     >
                       <div className="flex items-center gap-3">
                         <div className="relative">
-                          <div className="w-12 h-12 rounded-full bg-[var(--color-border-strong)] flex items-center justify-center font-bold text-[var(--font-size-body)] text-[var(--color-fg-primary)]">
+                          <div className="w-12 h-12 rounded-none bg-[var(--color-border-strong)] flex items-center justify-center font-bold text-[var(--font-size-body)] text-[var(--color-fg-primary)]">
                             {contact.nickname}
                           </div>
                           <div
-                            className="absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[var(--color-bg)] bg-[var(--color-border-strong)]"
+                            className="absolute bottom-0 right-0 w-3 h-3 rounded-none border-2 border-[var(--color-bg)] bg-[var(--color-border-strong)]"
                             aria-hidden
                           />
                         </div>
@@ -265,6 +294,7 @@ export default function Home() {
                       onClick={() => {
                         setSelectedContactId(contact.roomId);
                         markContactOpened(contact.roomId);
+                        void ackRoomPushNotifications(contact.roomId);
                         router.push(`/chat`);
                       }}
                     />

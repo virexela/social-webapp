@@ -10,6 +10,7 @@ import { base64UrlToBytes, bytesToBase64Url } from "@/lib/protocol/base64url";
 import { useSocialStore } from "@/lib/state/store";
 import { joinInviteRoom } from "@/lib/utils/socket";
 import { joinRoomMembership } from "@/lib/action/rooms";
+import { fetchRelayJoinToken } from "@/lib/action/relay";
 import { saveContactToDB } from "@/lib/action/contacts";
 
 interface AddContactModalProps {
@@ -65,14 +66,16 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
   }, []);
 
   const startInviteListener = useCallback(
-    (targetRoomId: string, limit: number) => {
+    async (targetRoomId: string, limit: number) => {
       closeInviteSocket();
+      const socialId = localStorage.getItem("social_id") || undefined;
+      const token = await fetchRelayJoinToken(targetRoomId, "invite", socialId);
       const socket = joinInviteRoom(targetRoomId, {
         onInviteAccepted: () => {
           inviteAcceptedRoomsRef.current.add(targetRoomId);
           activatePendingContact(targetRoomId);
         },
-      }, { limit, creator: true });
+      }, { limit, creator: true, token: token ?? undefined });
       inviteSocketRef.current = socket;
     },
     [activatePendingContact, closeInviteSocket]
@@ -93,7 +96,7 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
       setRoomId(nextRoomId);
       setConversationKey(connId);
       setInviteLimit(String(nextLimit));
-      startInviteListener(nextRoomId, nextLimit);
+      await startInviteListener(nextRoomId, nextLimit);
 
       setStep("send-invite");
       setBusy(false);
@@ -268,7 +271,13 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
 
     if (step === "send-invite" && inviteString) {
       // conversationKey already holds our 16‑byte connection id
-      addContact(name, toHex(conversationKey), roomId);
+      const normalizedLimit = normalizeInviteLimit(inviteLimit);
+      addContact(name, toHex(conversationKey), roomId, {
+        isGroup: normalizedLimit > 2,
+        groupName: normalizedLimit > 2 ? name : undefined,
+        participantLimit: normalizedLimit,
+        participants: [],
+      });
       const socialId = localStorage.getItem("social_id");
       if (socialId) {
         const contact = useSocialStore.getState().contacts.find((c) => c.roomId === roomId);
@@ -324,7 +333,12 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
       const name = contactName.trim();
       if (!name) return;
 
-      addContact(name, toHex(connectionId), roomId);
+      addContact(name, toHex(connectionId), roomId, {
+        isGroup: parsedLimit > 2,
+        groupName: parsedLimit > 2 ? name : undefined,
+        participantLimit: parsedLimit,
+        participants: [],
+      });
       const socialId = localStorage.getItem("social_id");
       if (socialId) {
         const contact = useSocialStore.getState().contacts.find((c) => c.roomId === roomId);
@@ -341,9 +355,10 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
         }
       }
 
+      const token = await fetchRelayJoinToken(roomId, "invite", socialId || undefined);
       const acceptSocket = joinInviteRoom(roomId, {
         onError: () => setError("Unable to notify invite room"),
-      }, { limit: parsedLimit });
+      }, { limit: parsedLimit, token: token ?? undefined });
       acceptSocket.addEventListener("open", () => {
         window.setTimeout(() => {
           acceptSocket.close(1000, "invite-accepted");
@@ -446,15 +461,6 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
                       Default is {DEFAULT_INVITE_LIMIT}. Includes you.
                     </div>
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={() => void startSendInvite()}
-                    disabled={busy}
-                    className="w-full border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50"
-                  >
-                    Regenerate invite with limit
-                  </button>
 
                   {!showQR ? (
                     <div className="space-y-3">

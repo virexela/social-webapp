@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureDatabaseConnection, getDb } from "@/lib/db/database";
+import { ensureDatabaseConnection, getDatabaseDiagnostics, getDb } from "@/lib/db/database";
+import { validateServerConfig } from "@/lib/server/config";
 
 export async function GET(req: NextRequest) {
   try {
@@ -8,11 +9,17 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: true, service: "social-webapp" }, { status: 200 });
     }
 
+    validateServerConfig();
     await ensureDatabaseConnection();
     await getDb().command({ ping: 1 });
 
     return NextResponse.json(
-      { ok: true, service: "social-webapp", checks: { mongo: "ok" } },
+      {
+        ok: true,
+        service: "social-webapp",
+        checks: { mongo: "ok", securityConfig: "ok" },
+        diagnostics: getDatabaseDiagnostics(),
+      },
       { status: 200 }
     );
   } catch (err) {

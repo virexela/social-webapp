@@ -6,10 +6,12 @@ function ensureWsPath(base: string): string {
 
 export function getRelayWsUrl(): string {
   const isDev = process.env.NODE_ENV !== "production";
-  let base =
-    process.env.NEXT_PUBLIC_RELAY_WS_URL ??
-    process.env.NEXT_PUBLIC_WS_URL ??
-    "ws://localhost:8080/ws";
+  const configuredBase = process.env.NEXT_PUBLIC_RELAY_WS_URL ?? process.env.NEXT_PUBLIC_WS_URL;
+  if (!isDev && !configuredBase) {
+    throw new Error("Missing NEXT_PUBLIC_RELAY_WS_URL (or NEXT_PUBLIC_WS_URL) in production");
+  }
+
+  let base = configuredBase ?? "ws://localhost:8080/ws";
 
   if (isDev && typeof window !== "undefined") {
     const host = window.location.hostname;

@@ -1,4 +1,5 @@
 import { authenticateSessionWithRecovery } from "@/lib/action/session";
+import { attachCsrfHeader } from "@/lib/action/csrf";
 
 type AuthFetchInit = RequestInit & {
   socialId?: string;
@@ -49,8 +50,9 @@ export async function fetchWithAutoSession(
   init: AuthFetchInit = {}
 ): Promise<Response> {
   const { socialId, skipAuthRetry, ...requestInit } = init;
+  const requestWithCsrf = attachCsrfHeader(requestInit);
 
-  const firstResponse = await fetch(input, requestInit);
+  const firstResponse = await fetch(input, requestWithCsrf);
   if (firstResponse.status !== 401 || skipAuthRetry === true) {
     return firstResponse;
   }
@@ -60,5 +62,5 @@ export async function fetchWithAutoSession(
     return firstResponse;
   }
 
-  return fetch(input, requestInit);
+  return fetch(input, requestWithCsrf);
 }

@@ -41,7 +41,7 @@ describe("getMessagesFromDB membership recovery", () => {
                 id: "m-1",
                 encryptedContent: "cipher",
                 timestamp: 123,
-                senderSocialId: "aaaaaaaaaaaaaaaaaaaaaaaa",
+                isOwn: true,
               },
             ],
           }),

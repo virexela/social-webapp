@@ -7,9 +7,9 @@ import { LogOut, Trash2, Cloud, Bell, ChevronLeft, Sun, Moon } from "lucide-reac
 import { useTheme } from "next-themes";
 import clsx from "clsx";
 import { clearRemoteData, deleteRemoteUser } from "@/lib/action/account";
+import { attachCsrfHeader } from "@/lib/action/csrf";
 import { useSocialStore } from "@/lib/state/store";
 import {
-  getPushSubscriptionStatus,
   registerPushSubscription,
   unregisterPushSubscription,
 } from "@/lib/action/push";
@@ -28,7 +28,6 @@ export default function SettingsPage() {
   });
 
   const [devicesCount, setDevicesCount] = useState<number>(1);
-  const [pushStatus, setPushStatus] = useState<"checking" | "subscribed" | "not-subscribed">("checking");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string>("");
 
@@ -36,21 +35,14 @@ export default function SettingsPage() {
   const { theme: rawTheme, setTheme } = useTheme();
   const [themeSelection, setThemeSelection] = useState<string>(() => rawTheme ?? "system");
 
-  useEffect(() => {
-    void (async () => {
-      const status = await getPushSubscriptionStatus();
-      if (!status.success) {
-        setPushStatus("not-subscribed");
-        return;
-      }
-      setPushStatus(status.subscribed ? "subscribed" : "not-subscribed");
-    })();
-  }, []);
-
   async function logout() {
     setBusy(true);
     setActionError("");
     try {
+      await fetch("/api/account/logout", attachCsrfHeader({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }));
       resetState();
       localStorage.clear();
       sessionStorage.clear();
@@ -156,8 +148,13 @@ export default function SettingsPage() {
       }
 
       setNotificationsEnabled(next);
-      setPushStatus(next ? "subscribed" : "not-subscribed");
       localStorage.setItem("notify", next ? "1" : "0");
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.controller?.postMessage({
+          type: "chat_runtime_state",
+          notificationsEnabled: next,
+        });
+      }
     } catch (e) {
       setActionError((e as Error).message || "Failed to update notifications");
     } finally {
@@ -269,17 +266,6 @@ export default function SettingsPage() {
                 </button>
               </div>
 
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <Bell size={16} className="text-[var(--color-fg-muted)]" />
-                  <div>
-                    <div className="text-[var(--font-size-body)] font-semibold">Push Status</div>
-                    <div className="text-[var(--font-size-meta)] text-[var(--color-fg-muted)]">
-                      {pushStatus === "checking" ? "Checking..." : pushStatus === "subscribed" ? "Subscribed" : "Not subscribed"}
-                    </div>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
 

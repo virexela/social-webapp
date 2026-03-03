@@ -15,9 +15,18 @@ export async function saveMessageToDB(input: PersistMessageInput): Promise<{ suc
       JSON.stringify({
         content: input.message.content,
         kind: input.message.kind ?? "text",
+        senderMemberId: input.message.senderMemberId,
+        senderAlias: input.message.senderAlias,
         fileName: input.message.fileName,
         mimeType: input.message.mimeType,
-        fileDataBase64: input.message.fileDataBase64,
+        attachmentId: input.message.attachmentId,
+        wrappedFileKey: input.message.wrappedFileKey,
+        wrappedFileKeyVersion: input.message.wrappedFileKeyVersion,
+        attachmentSize: input.message.attachmentSize,
+        replyToMessageId: input.message.replyToMessageId,
+        replyToContent: input.message.replyToContent,
+        replyToSenderAlias: input.message.replyToSenderAlias,
+        reactions: input.message.reactions ?? [],
       }),
       input.message.conversationKey
     );
@@ -50,7 +59,8 @@ export async function saveMessageToDB(input: PersistMessageInput): Promise<{ suc
 export async function getMessagesFromDB(
   roomId: string,
   conversationKey: string,
-  currentSocialId: string
+  currentSocialId: string,
+  currentMemberId?: string
 ): Promise<{ success: boolean; messages?: ChatMessage[]; error?: string }> {
   try {
     const params = new URLSearchParams({ roomId, socialId: currentSocialId });
@@ -83,7 +93,8 @@ export async function getMessagesFromDB(
       id: string;
       encryptedContent: string;
       timestamp: number;
-      senderSocialId: string;
+      senderMemberId?: string;
+      isOwn?: boolean;
     }> : [];
 
     const decrypted: ChatMessage[] = [];
@@ -100,9 +111,19 @@ export async function getMessagesFromDB(
         let parsed: {
           content: string;
           kind?: "text" | "file";
+          senderMemberId?: string;
+          senderAlias?: string;
           fileName?: string;
           mimeType?: string;
+          attachmentId?: string;
+          wrappedFileKey?: string;
+          wrappedFileKeyVersion?: number;
+          attachmentSize?: number;
           fileDataBase64?: string;
+          replyToMessageId?: string;
+          replyToContent?: string;
+          replyToSenderAlias?: string;
+          reactions?: Array<{ emoji?: string; memberId?: string; alias?: string }>;
         };
         try {
           const parsedRaw = JSON.parse(decryptedPayload) as {
@@ -110,10 +131,20 @@ export async function getMessagesFromDB(
             text?: string;
             kind?: "text" | "file";
             type?: "chat" | "file";
+            senderMemberId?: string;
+            senderAlias?: string;
             fileName?: string;
             mimeType?: string;
+            attachmentId?: string;
+            wrappedFileKey?: string;
+            wrappedFileKeyVersion?: number;
+            attachmentSize?: number;
             fileDataBase64?: string;
             fileData?: string;
+            replyToMessageId?: string;
+            replyToContent?: string;
+            replyToSenderAlias?: string;
+            reactions?: Array<{ emoji?: string; memberId?: string; alias?: string }>;
           };
 
           const normalizedKind =
@@ -126,9 +157,23 @@ export async function getMessagesFromDB(
           parsed = {
             content: String(normalizedContent ?? ""),
             kind: normalizedKind,
+            senderMemberId: parsedRaw.senderMemberId,
+            senderAlias: parsedRaw.senderAlias,
             fileName: parsedRaw.fileName,
             mimeType: parsedRaw.mimeType,
+            attachmentId: parsedRaw.attachmentId,
+            wrappedFileKey: parsedRaw.wrappedFileKey,
+            wrappedFileKeyVersion: parsedRaw.wrappedFileKeyVersion,
+            attachmentSize: parsedRaw.attachmentSize,
             fileDataBase64: parsedRaw.fileDataBase64 ?? parsedRaw.fileData,
+            replyToMessageId: parsedRaw.replyToMessageId,
+            replyToContent: parsedRaw.replyToContent,
+            replyToSenderAlias: parsedRaw.replyToSenderAlias,
+            reactions: Array.isArray(parsedRaw.reactions)
+              ? parsedRaw.reactions
+                  .filter((r) => r && typeof r.emoji === "string" && typeof r.memberId === "string")
+                  .map((r) => ({ emoji: String(r.emoji), memberId: String(r.memberId), alias: r.alias ? String(r.alias) : undefined }))
+              : [],
           };
         } catch {
           parsed = { content: decryptedPayload, kind: "text" };
@@ -138,11 +183,31 @@ export async function getMessagesFromDB(
           conversationKey,
           content: String(parsed.content ?? ""),
           kind: parsed.kind ?? "text",
+          senderMemberId: parsed.senderMemberId || raw.senderMemberId,
+          senderAlias:
+            parsed.senderAlias ||
+            ((parsed.senderMemberId || raw.senderMemberId)
+              ? `peer-${String(parsed.senderMemberId || raw.senderMemberId).slice(0, 6)}`
+              : undefined),
           fileName: parsed.fileName,
           mimeType: parsed.mimeType,
+          attachmentId: parsed.attachmentId,
+          wrappedFileKey: parsed.wrappedFileKey,
+          wrappedFileKeyVersion: parsed.wrappedFileKeyVersion,
+          attachmentSize: parsed.attachmentSize,
           fileDataBase64: parsed.fileDataBase64,
+          replyToMessageId: parsed.replyToMessageId,
+          replyToContent: parsed.replyToContent,
+          replyToSenderAlias: parsed.replyToSenderAlias,
+          reactions: (parsed.reactions ?? [])
+            .filter((r): r is { emoji: string; memberId: string; alias?: string } => {
+              return Boolean(r && typeof r.emoji === "string" && typeof r.memberId === "string");
+            })
+            .map((r) => ({ emoji: r.emoji, memberId: r.memberId, alias: r.alias })),
           timestamp: Number(raw.timestamp),
-          isOwn: String(raw.senderSocialId) === currentSocialId,
+          isOwn:
+            Boolean(raw.isOwn) ||
+            (Boolean(currentMemberId) && (parsed.senderMemberId || raw.senderMemberId) === currentMemberId),
         });
       } catch {
         // skip undecryptable entries (wrong key/corrupt payload)

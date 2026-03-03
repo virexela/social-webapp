@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabaseConnection, getContactsCollection, getRoomMembersCollection } from "@/lib/db/database";
 import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
+import { blindStableId } from "@/lib/server/privacy";
 import { getSessionSocialIdFromRequest } from "@/lib/server/sessionAuth";
 import { isValidSocialId, isValidRoomId, isValidEncryptedContactSize } from "@/lib/validation/schemas";
 
@@ -62,11 +63,12 @@ export async function POST(req: NextRequest) {
     await ensureDatabaseConnection();
     const contacts = getContactsCollection();
     const roomMembers = getRoomMembersCollection();
+    const ownerId = blindStableId(socialId);
 
     await contacts.updateOne(
-      { socialId, roomId },
+      { ownerId, roomId },
       {
-        $set: { socialId, roomId, encryptedContact, updatedAt: new Date() },
+        $set: { ownerId, roomId, encryptedContact, updatedAt: new Date() },
         $setOnInsert: { createdAt: new Date() },
       },
       { upsert: true }
@@ -74,9 +76,9 @@ export async function POST(req: NextRequest) {
 
     const now = new Date();
     await roomMembers.updateOne(
-      { socialId, roomId },
+      { memberId: ownerId, roomId },
       {
-        $set: { socialId, roomId, updatedAt: now },
+        $set: { memberId: ownerId, roomId, updatedAt: now },
         $setOnInsert: { createdAt: now },
       },
       { upsert: true }
@@ -104,9 +106,10 @@ export async function GET(req: NextRequest) {
 
     await ensureDatabaseConnection();
     const contacts = getContactsCollection();
+    const ownerId = blindStableId(socialId);
 
     const docs = await contacts
-      .find({ socialId }, { projection: { _id: 0, roomId: 1, encryptedContact: 1 } })
+      .find({ ownerId }, { projection: { _id: 0, roomId: 1, encryptedContact: 1 } })
       .toArray();
 
     return NextResponse.json(

@@ -1,4 +1,5 @@
 import { BackendKeyEnvelope } from "@/lib/protocol/recoveryVault";
+import { attachCsrfHeader } from "@/lib/action/csrf";
 
 interface RegisterInput {
   recoveryAuthPublicKey: string;
@@ -8,11 +9,11 @@ interface RegisterInput {
 
 export async function registerUser(input: RegisterInput): Promise<{ success: boolean; error?: string, socialId?: string }> {
   try {
-    const response = await fetch('/api/register', {
+    const response = await fetch('/api/register', attachCsrfHeader({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
-    });
+    }));
 
     if (!response.ok) {
       const text = await response.text();

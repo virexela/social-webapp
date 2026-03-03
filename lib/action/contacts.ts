@@ -19,6 +19,12 @@ export async function saveContactToDB(socialId: string, contact: Contact): Promi
       conversationKey: contact.conversationKey,
       roomId: contact.roomId,
       createdAt: contact.createdAt,
+      isGroup: Boolean(contact.isGroup),
+      groupName: contact.groupName ?? "",
+      participantLimit: contact.participantLimit ?? 0,
+      participants: Array.isArray(contact.participants)
+        ? contact.participants.map((p) => ({ memberId: p.memberId, alias: p.alias }))
+        : [],
       unreadCount: contact.unreadCount ?? 0,
       lastOpenedAt: contact.lastOpenedAt ?? 0,
       latestMessage: contact.latestMessage
@@ -27,8 +33,15 @@ export async function saveContactToDB(socialId: string, contact: Contact): Promi
             content: contact.latestMessage.content,
             timestamp: contact.latestMessage.timestamp,
             isOwn: contact.latestMessage.isOwn,
+            senderMemberId: contact.latestMessage.senderMemberId,
+            senderAlias: contact.latestMessage.senderAlias,
             kind: contact.latestMessage.kind ?? "text",
             fileName: contact.latestMessage.fileName,
+            mimeType: contact.latestMessage.mimeType,
+            attachmentId: contact.latestMessage.attachmentId,
+            wrappedFileKey: contact.latestMessage.wrappedFileKey,
+            wrappedFileKeyVersion: contact.latestMessage.wrappedFileKeyVersion,
+            attachmentSize: contact.latestMessage.attachmentSize,
           }
         : null,
     };
@@ -112,6 +125,10 @@ export async function getContactsFromDB(socialId: string): Promise<{ success: bo
           conversationKey: string;
           roomId: string;
           createdAt: number;
+          isGroup?: boolean;
+          groupName?: string;
+          participantLimit?: number;
+          participants?: Array<{ memberId: string; alias: string }>;
           unreadCount?: number;
           lastOpenedAt?: number;
           latestMessage?: {
@@ -119,8 +136,15 @@ export async function getContactsFromDB(socialId: string): Promise<{ success: bo
             content: string;
             timestamp: number;
             isOwn: boolean;
+            senderMemberId?: string;
+            senderAlias?: string;
             kind?: "text" | "file";
             fileName?: string;
+            mimeType?: string;
+            attachmentId?: string;
+            wrappedFileKey?: string;
+            wrappedFileKeyVersion?: number;
+            attachmentSize?: number;
           } | null;
         };
         contacts.push({
@@ -129,6 +153,14 @@ export async function getContactsFromDB(socialId: string): Promise<{ success: bo
           conversationKey: parsed.conversationKey,
           roomId: parsed.roomId,
           createdAt: parsed.createdAt,
+          isGroup: Boolean(parsed.isGroup),
+          groupName: parsed.groupName || undefined,
+          participantLimit: Number(parsed.participantLimit ?? 0) || undefined,
+          participants: Array.isArray(parsed.participants)
+            ? parsed.participants
+                .filter((p) => p && typeof p.memberId === "string")
+                .map((p) => ({ memberId: p.memberId, alias: typeof p.alias === "string" ? p.alias : "Unknown" }))
+            : [],
           unreadCount: parsed.unreadCount ?? 0,
           lastOpenedAt: parsed.lastOpenedAt ?? 0,
           latestMessage: parsed.latestMessage
@@ -138,8 +170,15 @@ export async function getContactsFromDB(socialId: string): Promise<{ success: bo
                 conversationKey: parsed.conversationKey,
                 timestamp: parsed.latestMessage.timestamp,
                 isOwn: parsed.latestMessage.isOwn,
+                senderMemberId: parsed.latestMessage.senderMemberId,
+                senderAlias: parsed.latestMessage.senderAlias,
                 kind: parsed.latestMessage.kind,
                 fileName: parsed.latestMessage.fileName,
+                mimeType: parsed.latestMessage.mimeType,
+                attachmentId: parsed.latestMessage.attachmentId,
+                wrappedFileKey: parsed.latestMessage.wrappedFileKey,
+                wrappedFileKeyVersion: parsed.latestMessage.wrappedFileKeyVersion,
+                attachmentSize: parsed.latestMessage.attachmentSize,
               }
             : undefined,
         });

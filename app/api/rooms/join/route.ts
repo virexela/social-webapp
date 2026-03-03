@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabaseConnection, getRoomMembersCollection } from "@/lib/db/database";
 import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
+import { blindStableId } from "@/lib/server/privacy";
 import { getSessionSocialIdFromRequest } from "@/lib/server/sessionAuth";
 import { isValidRoomId, isValidSocialId } from "@/lib/validation/schemas";
 
@@ -39,13 +40,14 @@ export async function POST(req: NextRequest) {
 
     await ensureDatabaseConnection();
     const roomMembers = getRoomMembersCollection();
+    const memberId = blindStableId(socialId);
     await roomMembers.updateOne(
-      { socialId, roomId },
-      { $set: { socialId, roomId, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
+      { memberId, roomId },
+      { $set: { memberId, roomId, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
       { upsert: true }
     );
 
-    return NextResponse.json({ success: true }, { status: 200 });
+    return NextResponse.json({ success: true, memberId }, { status: 200 });
   } catch (err) {
     return NextResponse.json({ success: false, error: (err as Error).message }, { status: 500 });
   }

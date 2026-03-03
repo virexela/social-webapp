@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabaseConnection, getContactsCollection, getMessagesCollection, getRoomMembersCollection } from "@/lib/db/database";
 import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
+import { blindStableId } from "@/lib/server/privacy";
 import { isValidSocialId, isValidRoomId, isValidMessageId, isValidTimestamp, isValidEncryptedMessageSize } from "@/lib/validation/schemas";
 
 interface MessagePayload {
@@ -66,13 +67,22 @@ export async function POST(req: NextRequest) {
     await ensureDatabaseConnection();
     const roomMembers = getRoomMembersCollection();
     const messages = getMessagesCollection();
+    const memberId = blindStableId(senderSocialId);
+    const senderId = memberId;
+    const existingMembership = await roomMembers.findOne(
+      { memberId, roomId },
+      { projection: { _id: 1 } }
+    );
+    if (!existingMembership) {
+      return NextResponse.json({ success: false, error: "Forbidden: sender is not a room member" }, { status: 403 });
+    }
 
     const now = new Date();
     await messages.updateOne(
       { roomId, messageId },
       {
         $set: {
-          senderSocialId,
+          senderId,
           roomId,
           messageId,
           encryptedContent,
@@ -86,14 +96,7 @@ export async function POST(req: NextRequest) {
       { upsert: true }
     );
 
-    await roomMembers.updateOne(
-      { socialId: senderSocialId, roomId },
-      {
-        $set: { socialId: senderSocialId, roomId, updatedAt: now },
-        $setOnInsert: { createdAt: now },
-      },
-      { upsert: true }
-    );
+    await roomMembers.updateOne({ memberId, roomId }, { $set: { updatedAt: now } });
 
     return NextResponse.json({ success: true }, { status: 201 });
   } catch (err) {
@@ -124,9 +127,10 @@ export async function GET(req: NextRequest) {
     const contacts = getContactsCollection();
     const roomMembers = getRoomMembersCollection();
     const messages = getMessagesCollection();
+    const ownerId = blindStableId(socialId);
 
-    const membership = await roomMembers.findOne({ socialId, roomId }, { projection: { _id: 1 } });
-    const ownedContact = await contacts.findOne({ socialId, roomId }, { projection: { _id: 1 } });
+    const membership = await roomMembers.findOne({ roomId, memberId: ownerId }, { projection: { _id: 1 } });
+    const ownedContact = await contacts.findOne({ roomId, ownerId }, { projection: { _id: 1 } });
     if (!membership && !ownedContact) {
       return NextResponse.json({ success: false, error: "Forbidden: not a room member" }, { status: 403 });
     }
@@ -140,7 +144,7 @@ export async function GET(req: NextRequest) {
             messageId: 1,
             encryptedContent: 1,
             timestamp: 1,
-            senderSocialId: 1,
+            senderId: 1,
           },
         }
       )
@@ -151,7 +155,8 @@ export async function GET(req: NextRequest) {
       id: String(d.messageId),
       encryptedContent: String(d.encryptedContent),
       timestamp: Number(d.timestamp),
-      senderSocialId: String(d.senderSocialId),
+      senderMemberId: String(d.senderId ?? ""),
+      isOwn: String(d.senderId ?? "") === ownerId,
     }));
 
     return NextResponse.json({ success: true, messages: data }, { status: 200 });

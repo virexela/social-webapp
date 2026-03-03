@@ -56,10 +56,10 @@ export function ContactListItem({
     >
       <div className="flex items-center gap-3">
         <div className="relative">
-          <div className="w-12 h-12 rounded-full bg-[var(--color-border-strong)] flex items-center justify-center font-bold text-[var(--font-size-body)] text-[var(--color-fg-primary)]">{initials(name)}</div>
+          <div className="w-12 h-12 rounded-none bg-[var(--color-border-strong)] flex items-center justify-center font-bold text-[var(--font-size-body)] text-[var(--color-fg-primary)]">{initials(name)}</div>
           <div
             className={clsx(
-              "absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[var(--color-bg)]",
+              "absolute bottom-0 right-0 w-3 h-3 rounded-none border-2 border-[var(--color-bg)]",
               online ? "bg-[var(--color-success)]" : "bg-[var(--color-border-strong)]"
             )}
             aria-hidden
@@ -72,7 +72,7 @@ export function ContactListItem({
           <div className="text-[var(--font-size-body)] lg:text-sm font-bold uppercase text-[var(--color-fg-primary)] truncate">{name}</div>
           <div className="flex items-center gap-2">
             {unreadCount > 0 ? (
-              <div className="min-w-5 h-5 px-1 rounded-full bg-[var(--color-fg-primary)] text-[var(--color-bg)] text-[10px] flex items-center justify-center">
+              <div className="min-w-5 h-5 px-1 rounded-none bg-[var(--color-fg-primary)] text-[var(--color-bg)] text-[10px] flex items-center justify-center">
                 {unreadCount}
               </div>
             ) : null}

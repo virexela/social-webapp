@@ -1,6 +1,9 @@
 import { fetchWithAutoSession } from "@/lib/action/authFetch";
 
-export async function joinRoomMembership(socialId: string, roomId: string): Promise<{ success: boolean; error?: string }> {
+export async function joinRoomMembership(
+  socialId: string,
+  roomId: string
+): Promise<{ success: boolean; error?: string; memberId?: string }> {
   try {
     const response = await fetchWithAutoSession("/api/rooms/join", {
       method: "POST",
@@ -15,7 +18,7 @@ export async function joinRoomMembership(socialId: string, roomId: string): Prom
     }
 
     const data = await response.json();
-    return { success: Boolean(data?.success), error: data?.error };
+    return { success: Boolean(data?.success), error: data?.error, memberId: data?.memberId };
   } catch (err) {
     return { success: false, error: (err as Error).message || String(err) };
   }

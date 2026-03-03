@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
-import { ensureDatabaseConnection, getContactsCollection, getMessagesCollection, getUsersCollection } from "@/lib/db/database";
+import {
+  ensureDatabaseConnection,
+  getContactsCollection,
+  getMessagesCollection,
+  getPushSubscriptionsCollection,
+  getRoomMembersCollection,
+  getSessionsCollection,
+  getUsersCollection,
+} from "@/lib/db/database";
 import {
   hashNonce,
   isValidRecoveryAuthHash,
@@ -8,6 +16,9 @@ import {
   verifyChallengeSignature,
   verifyChallengeSignatureWithPublicKey,
 } from "@/lib/server/recoveryAuth";
+import { getRequestIdFromRequest, logError } from "@/lib/server/logger";
+import { blindStableId } from "@/lib/server/privacy";
+import { getChallengeContextHash } from "@/lib/server/challengeContext";
 
 interface DeleteUserPayload {
   socialId: string;
@@ -18,6 +29,7 @@ interface DeleteUserPayload {
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = getRequestIdFromRequest(req);
   try {
     const body = (await req.json()) as DeleteUserPayload;
     const socialId = body.socialId?.trim();
@@ -41,6 +53,10 @@ export async function POST(req: NextRequest) {
     const users = getUsersCollection();
     const messages = getMessagesCollection();
     const contacts = getContactsCollection();
+    const roomMembers = getRoomMembersCollection();
+    const pushSubscriptions = getPushSubscriptionsCollection();
+    const sessions = getSessionsCollection();
+    const ownerId = blindStableId(socialId);
 
     const user = await users.findOne({ _id: userId }, { projection: { recoveryAuthPublicKey: 1, recoveryAuthHash: 1, pendingAccountChallenge: 1 } });
     if (!user) {
@@ -50,7 +66,7 @@ export async function POST(req: NextRequest) {
     const recoveryAuthPublicKey = String(user.recoveryAuthPublicKey ?? "").toLowerCase();
 
     const challenge = user.pendingAccountChallenge as
-      | { action?: string; nonceHash?: string; expiresAt?: string | Date }
+      | { action?: string; nonceHash?: string; contextHash?: string; expiresAt?: string | Date }
       | undefined;
 
     if (!challenge || challenge.action !== "delete-user") {
@@ -64,6 +80,10 @@ export async function POST(req: NextRequest) {
 
     if (hashNonce(nonce) !== String(challenge.nonceHash).toLowerCase()) {
       return NextResponse.json({ success: false, error: "Invalid challenge" }, { status: 401 });
+    }
+    const requestContextHash = getChallengeContextHash(req);
+    if (String(challenge.contextHash ?? "") !== requestContextHash) {
+      return NextResponse.json({ success: false, error: "Invalid challenge context" }, { status: 401 });
     }
 
     if (isValidRecoveryAuthPublicKey(recoveryAuthPublicKey)) {
@@ -104,18 +124,39 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const userRooms = await contacts
-      .find({ socialId }, { projection: { roomId: 1, _id: 0 } })
-      .toArray();
+    const consumeResult = await users.updateOne(
+      {
+        _id: userId,
+        "pendingAccountChallenge.action": "delete-user",
+        "pendingAccountChallenge.nonceHash": String(challenge.nonceHash).toLowerCase(),
+        "pendingAccountChallenge.contextHash": requestContextHash,
+        "pendingAccountChallenge.expiresAt": { $gt: new Date() },
+      },
+      {
+        $unset: { pendingAccountChallenge: "" },
+        $set: { updatedAt: new Date() },
+      }
+    );
+    if (consumeResult.modifiedCount !== 1) {
+      return NextResponse.json({ success: false, error: "Challenge already consumed" }, { status: 401 });
+    }
+
+    const userRooms = await contacts.find({ ownerId }, { projection: { roomId: 1, _id: 0 } }).toArray();
     const roomIds = userRooms.map((r) => String(r.roomId));
     if (roomIds.length > 0) {
-      await messages.deleteMany({ roomId: { $in: roomIds } });
+      await messages.deleteMany({ roomId: { $in: roomIds }, senderId: ownerId });
     }
-    await contacts.deleteMany({ socialId });
-    await users.deleteOne({ _id: userId });
+    await Promise.all([
+      contacts.deleteMany({ ownerId }),
+      roomMembers.deleteMany({ memberId: ownerId }),
+      pushSubscriptions.deleteMany({ ownerId }),
+      sessions.deleteMany({ socialId }),
+      users.deleteOne({ _id: userId }),
+    ]);
 
-    return NextResponse.json({ success: true }, { status: 200 });
+    return NextResponse.json({ success: true }, { status: 200, headers: { "X-Request-ID": requestId } });
   } catch (err) {
-    return NextResponse.json({ success: false, error: (err as Error).message }, { status: 500 });
+    logError(err, { requestId, endpoint: "/api/account/delete-user", method: "POST" });
+    return NextResponse.json({ success: false, error: (err as Error).message }, { status: 500, headers: { "X-Request-ID": requestId } });
   }
 }

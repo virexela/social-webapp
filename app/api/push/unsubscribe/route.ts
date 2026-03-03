@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabaseConnection, getPushSubscriptionsCollection } from "@/lib/db/database";
 import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
+import { blindStableId } from "@/lib/server/privacy";
 
 interface UnsubscribePayload {
   socialId: string;
@@ -19,7 +20,8 @@ export async function POST(req: NextRequest) {
 
     await ensureDatabaseConnection();
     const subs = getPushSubscriptionsCollection();
-    await subs.deleteMany({ socialId });
+    const ownerId = blindStableId(socialId);
+    await subs.deleteMany({ ownerId });
 
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (err) {

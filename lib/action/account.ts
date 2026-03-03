@@ -3,6 +3,7 @@ import {
   signAccountChallenge,
   signAccountChallengeLegacy,
 } from "@/lib/protocol/recoveryVault";
+import { attachCsrfHeader } from "@/lib/action/csrf";
 
 type ProtectedAction = "clear-data" | "delete-user";
 
@@ -25,11 +26,11 @@ async function fetchChallenge(
   action: ProtectedAction
 ): Promise<{ success: boolean; nonce?: string; error?: string }> {
   try {
-    const response = await fetch("/api/account/challenge", {
+    const response = await fetch("/api/account/challenge", attachCsrfHeader({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ socialId, action }),
-    });
+    }));
 
     if (!response.ok) {
       const text = await response.text();
@@ -73,7 +74,7 @@ async function runProtectedAction(
     );
     const recoveryAuthPublicKey = deriveRecoveryAuthPublicKey(input.recoveryKeyHex);
 
-    const response = await fetch(path, {
+    const response = await fetch(path, attachCsrfHeader({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -83,7 +84,7 @@ async function runProtectedAction(
         legacySignature,
         recoveryAuthPublicKey,
       }),
-    });
+    }));
 
     if (!response.ok) {
       const text = await response.text();

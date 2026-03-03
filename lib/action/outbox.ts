@@ -1,8 +1,39 @@
 import { ChatMessage } from "@/lib/state/store";
 
 type OutboxPayload =
-  | { type: "chat"; messageId: string; text: string }
-  | { type: "file"; messageId: string; fileName: string; mimeType: string; fileDataBase64: string };
+  | {
+      type: "chat";
+      messageId: string;
+      text: string;
+      senderMemberId?: string;
+      senderAlias?: string;
+      replyToMessageId?: string;
+      replyToContent?: string;
+      replyToSenderAlias?: string;
+    }
+  | {
+      type: "file";
+      messageId: string;
+      fileName: string;
+      mimeType: string;
+      attachmentId: string;
+      wrappedFileKey: string;
+      wrappedFileKeyVersion?: number;
+      attachmentSize?: number;
+      senderMemberId?: string;
+      senderAlias?: string;
+      replyToMessageId?: string;
+      replyToContent?: string;
+      replyToSenderAlias?: string;
+    }
+  | {
+      type: "reaction";
+      targetMessageId: string;
+      emoji: string;
+      action: "add" | "remove";
+      senderMemberId?: string;
+      senderAlias?: string;
+    };
 
 export interface OutboxItem {
   roomId: string;

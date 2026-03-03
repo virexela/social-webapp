@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabaseConnection, getContactsCollection } from "@/lib/db/database";
 import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
+import { blindStableId } from "@/lib/server/privacy";
 
 interface DeleteContactPayload {
   socialId: string;
@@ -22,7 +23,8 @@ export async function POST(req: NextRequest) {
 
     await ensureDatabaseConnection();
     const contacts = getContactsCollection();
-    await contacts.deleteMany({ socialId, roomId });
+    const ownerId = blindStableId(socialId);
+    await contacts.deleteMany({ roomId, ownerId });
 
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (err) {

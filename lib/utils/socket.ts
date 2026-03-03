@@ -9,6 +9,7 @@ export type InviteSocketHandlers = {
 type InviteJoinOptions = {
   limit?: number;
   creator?: boolean;
+  token?: string;
 };
 
 function makeWsUrl(path: string): string {
@@ -40,6 +41,9 @@ export function joinInviteRoom(
   if (options.creator) {
     url.searchParams.set("creator", "1");
   }
+  if (options.token) {
+    url.searchParams.set("token", options.token);
+  }
   const socket = new WebSocket(url.toString());
 
   socket.addEventListener("message", (event) => {
@@ -61,11 +65,21 @@ export function joinInviteRoom(
 }
 
 // build a relay websocket url for chat (user path)
-export function buildRelayChatUrl(roomId: string): string {
-  return makeWsUrl(`/ws/${encodeURIComponent(roomId)}`);
+export function buildRelayChatUrl(roomId: string, token?: string): string {
+  const url = new URL(makeWsUrl(`/ws/${encodeURIComponent(roomId)}`));
+  if (token) {
+    url.searchParams.set("token", token);
+  }
+  return url.toString();
 }
 
-export function buildRelayChatUrlCandidates(roomId: string): string[] {
+export function buildRelayChatUrlCandidates(roomId: string, token?: string): string[] {
   const path = `/ws/${encodeURIComponent(roomId)}`;
-  return getRelayWsUrlCandidates().map((base) => makeWsUrlFromBase(base, path));
+  return getRelayWsUrlCandidates().map((base) => {
+    const url = new URL(makeWsUrlFromBase(base, path));
+    if (token) {
+      url.searchParams.set("token", token);
+    }
+    return url.toString();
+  });
 }

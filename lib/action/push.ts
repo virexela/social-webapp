@@ -118,13 +118,31 @@ export async function unregisterPushSubscription(socialId: string): Promise<{ su
   }
 }
 
-export async function notifyRoomMessage(roomId: string, senderSocialId: string): Promise<void> {
+export async function notifyRoomMessage(
+  roomId: string,
+  senderSocialId: string,
+  messageId: string,
+  senderMemberId?: string,
+  senderAlias?: string
+): Promise<void> {
   try {
     await fetchWithAutoSession("/api/push/notify", {
       method: "POST",
       socialId: senderSocialId,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomId, senderSocialId }),
+      body: JSON.stringify({ roomId, senderSocialId, messageId, senderMemberId, senderAlias }),
+    });
+  } catch {
+    // best effort
+  }
+}
+
+export async function ackRoomPushNotifications(roomId: string): Promise<void> {
+  try {
+    await fetchWithAutoSession("/api/push/ack", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roomId }),
     });
   } catch {
     // best effort

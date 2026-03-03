@@ -3,6 +3,7 @@ import {
   signAccountChallenge,
   signAccountChallengeLegacy,
 } from "@/lib/protocol/recoveryVault";
+import { attachCsrfHeader } from "@/lib/action/csrf";
 
 interface SessionChallengeResponse {
   success: boolean;
@@ -20,11 +21,11 @@ interface SessionInput {
 
 async function fetchSessionChallenge(socialId: string): Promise<{ success: boolean; nonce?: string; error?: string }> {
   try {
-    const response = await fetch("/api/account/challenge", {
+    const response = await fetch("/api/account/challenge", attachCsrfHeader({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ socialId, action: "session-auth" }),
-    });
+    }));
 
     if (!response.ok) {
       const text = await response.text();
@@ -65,7 +66,7 @@ export async function authenticateSessionWithRecovery(input: SessionInput): Prom
 
     const recoveryAuthPublicKey = deriveRecoveryAuthPublicKey(input.recoveryKeyHex);
 
-    const response = await fetch("/api/account/session/verify", {
+    const response = await fetch("/api/account/session/verify", attachCsrfHeader({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -75,7 +76,7 @@ export async function authenticateSessionWithRecovery(input: SessionInput): Prom
         legacySignature,
         recoveryAuthPublicKey,
       }),
-    });
+    }));
 
     if (!response.ok) {
       const text = await response.text();

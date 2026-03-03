@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { createHash, randomUUID } from "crypto";
 
 /**
  * Structured logging utility for the application.
@@ -31,6 +32,7 @@ const SENSITIVE_KEYS = [
   "nonce",
   "signature",
 ];
+let lastSecurityEventHash = "";
 
 /**
  * Recursively redact sensitive information from an object.
@@ -64,7 +66,11 @@ function redactSensitiveData(obj: unknown): unknown {
  * Generate a unique request ID for tracing.
  */
 export function generateRequestId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return randomUUID();
+}
+
+export function getRequestIdFromRequest(req: NextRequest): string {
+  return req.headers.get("x-request-id")?.trim() || generateRequestId();
 }
 
 /**
@@ -85,7 +91,7 @@ export function logRequest(
   req: NextRequest,
   context: Omit<LogContext, "method" | "endpoint"> = {}
 ): LogContext {
-  const requestId = generateRequestId();
+  const requestId = getRequestIdFromRequest(req);
   const clientIp = getClientIpFromRequest(req);
 
   const logData = {
@@ -155,13 +161,20 @@ export function logSecurityEvent(
   eventType: "rate_limit" | "validation_error" | "unauthorized" | "forbidden",
   context: LogContext = {}
 ): void {
+  const eventId = randomUUID();
+  const eventPayload = JSON.stringify({ eventType, context, lastSecurityEventHash });
+  const eventHash = createHash("sha256").update(`${eventId}:${eventPayload}`).digest("hex");
   const logData = {
     timestamp: new Date().toISOString(),
     level: "warn",
     type: "security",
+    eventId,
+    prevEventHash: lastSecurityEventHash || null,
+    eventHash,
     eventType,
     ...context,
   };
+  lastSecurityEventHash = eventHash;
 
   console.log(JSON.stringify(logData));
 }

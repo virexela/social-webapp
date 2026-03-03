@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabaseConnection, getPushSubscriptionsCollection } from "@/lib/db/database";
 import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
+import { blindStableId } from "@/lib/server/privacy";
+import { encryptField, hashField } from "@/lib/server/secureFields";
 import { isValidSocialId, isValidPushEndpoint, isValidVapidKey } from "@/lib/validation/schemas";
 
 interface SubscribePayload {
@@ -53,13 +55,21 @@ export async function POST(req: NextRequest) {
 
     await ensureDatabaseConnection();
     const subs = getPushSubscriptionsCollection();
+    const ownerId = blindStableId(socialId);
+    const endpointHash = hashField(endpoint);
+    const endpointEnc = encryptField(endpoint);
+    const p256dhEnc = encryptField(p256dh);
+    const authEnc = encryptField(auth);
     await subs.updateOne(
-      { socialId, endpoint },
+      { ownerId, endpointHash },
       {
         $set: {
-          socialId,
+          ownerId,
+          endpointHash,
           endpoint,
+          endpointEnc,
           keys: { p256dh, auth },
+          keysEnc: { p256dhEnc, authEnc },
           updatedAt: new Date(),
         },
         $setOnInsert: { createdAt: new Date() },

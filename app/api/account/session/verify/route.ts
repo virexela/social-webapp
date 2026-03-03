@@ -9,6 +9,8 @@ import {
   verifyChallengeSignatureWithPublicKey,
 } from "@/lib/server/recoveryAuth";
 import { applySessionCookie, createUserSession } from "@/lib/server/sessionAuth";
+import { getRequestIdFromRequest, logError } from "@/lib/server/logger";
+import { getChallengeContextHash } from "@/lib/server/challengeContext";
 
 interface SessionVerifyPayload {
   socialId: string;
@@ -19,6 +21,7 @@ interface SessionVerifyPayload {
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = getRequestIdFromRequest(req);
   try {
     const body = (await req.json()) as SessionVerifyPayload;
     const socialId = body.socialId?.trim();
@@ -57,7 +60,7 @@ export async function POST(req: NextRequest) {
     }
 
     const challenge = user.pendingAccountChallenge as
-      | { action?: string; nonceHash?: string; expiresAt?: string | Date }
+      | { action?: string; nonceHash?: string; contextHash?: string; expiresAt?: string | Date }
       | undefined;
 
     if (!challenge || challenge.action !== "session-auth") {
@@ -71,6 +74,10 @@ export async function POST(req: NextRequest) {
 
     if (hashNonce(nonce) !== String(challenge.nonceHash).toLowerCase()) {
       return NextResponse.json({ success: false, error: "Invalid challenge" }, { status: 401 });
+    }
+    const requestContextHash = getChallengeContextHash(req);
+    if (String(challenge.contextHash ?? "") !== requestContextHash) {
+      return NextResponse.json({ success: false, error: "Invalid challenge context" }, { status: 401 });
     }
 
     const storedPublicKey = String(user.recoveryAuthPublicKey ?? "").toLowerCase();
@@ -114,8 +121,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    await users.updateOne(
-      { _id: userId },
+    const consumeResult = await users.updateOne(
+      {
+        _id: userId,
+        "pendingAccountChallenge.action": "session-auth",
+        "pendingAccountChallenge.nonceHash": String(challenge.nonceHash).toLowerCase(),
+        "pendingAccountChallenge.contextHash": requestContextHash,
+        "pendingAccountChallenge.expiresAt": { $gt: new Date() },
+      },
       {
         $set: {
           recoveryAuthPublicKey,
@@ -126,13 +139,17 @@ export async function POST(req: NextRequest) {
         },
       }
     );
+    if (consumeResult.modifiedCount !== 1) {
+      return NextResponse.json({ success: false, error: "Challenge already consumed" }, { status: 401 });
+    }
 
-    const token = await createUserSession(socialId);
-    const response = NextResponse.json({ success: true }, { status: 200 });
+    const token = await createUserSession(socialId, req);
+    const response = NextResponse.json({ success: true }, { status: 200, headers: { "X-Request-ID": requestId } });
     applySessionCookie(response, token);
 
     return response;
   } catch (err) {
-    return NextResponse.json({ success: false, error: (err as Error).message }, { status: 500 });
+    logError(err, { requestId, endpoint: "/api/account/session/verify", method: "POST" });
+    return NextResponse.json({ success: false, error: (err as Error).message }, { status: 500, headers: { "X-Request-ID": requestId } });
   }
 }

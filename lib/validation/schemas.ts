@@ -22,6 +22,7 @@ export const SOCIAL_ID_PATTERN = /^[a-fA-F0-9]{24}$/;
  * Alphanumeric, hyphens, underscores; max 128 characters
  */
 export const MESSAGE_ID_PATTERN = /^[a-zA-Z0-9\-_]{1,128}$/;
+export const ATTACHMENT_ID_PATTERN = /^[a-zA-Z0-9\-]{1,128}$/;
 
 /**
  * Validates a room ID according to the standard pattern.
@@ -51,6 +52,11 @@ export function isValidSocialId(socialId: string | undefined): boolean {
 export function isValidMessageId(messageId: string | undefined): boolean {
   if (!messageId || typeof messageId !== 'string') return false;
   return MESSAGE_ID_PATTERN.test(messageId);
+}
+
+export function isValidAttachmentId(attachmentId: string | undefined): boolean {
+  if (!attachmentId || typeof attachmentId !== "string") return false;
+  return ATTACHMENT_ID_PATTERN.test(attachmentId);
 }
 
 /**
@@ -94,6 +100,20 @@ export function isValidEncryptedContactSize(payload: string | undefined, maxByte
 export function isValidEncryptedMessageSize(payload: string | undefined, maxBytes = 2_000_000): boolean {
   if (!payload || typeof payload !== 'string') return false;
   return payload.length <= maxBytes;
+}
+
+export function isValidFileName(fileName: string | undefined, maxLength = 160): boolean {
+  if (!fileName || typeof fileName !== "string") return false;
+  const trimmed = fileName.trim();
+  if (!trimmed || trimmed.length > maxLength) return false;
+  return !/[\\/\0]/.test(trimmed);
+}
+
+export function isValidMimeType(mimeType: string | undefined, maxLength = 128): boolean {
+  if (!mimeType || typeof mimeType !== "string") return false;
+  const trimmed = mimeType.trim().toLowerCase();
+  if (!trimmed || trimmed.length > maxLength) return false;
+  return /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(trimmed);
 }
 
 /**

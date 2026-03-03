@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { createHash, randomBytes } from "crypto";
 import { ensureDatabaseConnection, getUsersCollection } from "@/lib/db/database";
+import { getChallengeContextHash } from "@/lib/server/challengeContext";
 
 interface ChallengePayload {
   socialId: string;
@@ -36,6 +37,7 @@ export async function POST(req: NextRequest) {
     const nonce = randomBytes(32).toString("hex");
     const nonceHash = createHash("sha256").update(nonce).digest("hex");
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    const contextHash = getChallengeContextHash(req);
 
     await users.updateOne(
       { _id: userId },
@@ -44,6 +46,7 @@ export async function POST(req: NextRequest) {
           pendingAccountChallenge: {
             action,
             nonceHash,
+            contextHash,
             expiresAt,
             createdAt: new Date(),
           },

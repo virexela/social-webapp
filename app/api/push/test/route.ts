@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabaseConnection, getPushSubscriptionsCollection } from "@/lib/db/database";
+import { blindStableId } from "@/lib/server/privacy";
+import { decryptField, hashField } from "@/lib/server/secureFields";
 import { sendWebPush } from "@/lib/server/vapid";
 import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
 
@@ -20,7 +22,8 @@ export async function POST(req: NextRequest) {
 
     await ensureDatabaseConnection();
     const subsCol = getPushSubscriptionsCollection();
-    const subs = await subsCol.find({ socialId }).toArray();
+    const ownerId = blindStableId(socialId);
+    const subs = await subsCol.find({ ownerId }).toArray();
 
     if (subs.length === 0) {
       return NextResponse.json({ success: false, error: "No push subscriptions found" }, { status: 404 });
@@ -29,7 +32,10 @@ export async function POST(req: NextRequest) {
     let sent = 0;
     const results: Array<{ endpoint: string; ok: boolean; status?: number; error?: string }> = [];
     for (const sub of subs) {
-      const endpoint = String(sub.endpoint ?? "");
+      const endpoint = decryptField(
+        sub.endpointEnc as { v: 1; alg: "aes-256-gcm"; ivHex: string; ciphertextHex: string; tagHex: string } | null,
+        String(sub.endpoint ?? "")
+      ) ?? "";
       if (!endpoint) continue;
       const result = await sendWebPush(endpoint);
       results.push({
@@ -41,7 +47,10 @@ export async function POST(req: NextRequest) {
       if (result.ok) {
         sent += 1;
       } else if (result.status === 404 || result.status === 410) {
-        await subsCol.deleteOne({ socialId, endpoint });
+        await subsCol.deleteOne({
+          ownerId,
+          $or: [{ endpointHash: String(sub.endpointHash ?? "") }, { endpointHash: hashField(endpoint) }],
+        });
       }
     }
 

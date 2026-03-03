@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionSocialIdFromRequest } from "@/lib/server/sessionAuth";
+import { logSecurityEvent } from "@/lib/server/logger";
 
 /**
  * Validates that request carries a valid authenticated session for the target socialId.
@@ -32,6 +33,11 @@ export async function validateUserAuthenticationOrRespond(
   const isValid = await validateUserAuthentication(req, socialId);
 
   if (!isValid) {
+    logSecurityEvent("unauthorized", {
+      endpoint: req.nextUrl.pathname,
+      method: req.method,
+      userId: socialId,
+    });
     return NextResponse.json(
       { success: false, error: "Unauthorized: Invalid or missing authentication" },
       { status: 401 }
@@ -54,6 +60,7 @@ export async function validateUserOwnership(
   targetSocialId: string
 ): Promise<NextResponse | null> {
   if (authenticatedSocialId !== targetSocialId) {
+    logSecurityEvent("forbidden", { userId: authenticatedSocialId, targetSocialId });
     return NextResponse.json(
       { success: false, error: "Forbidden: Cannot write data as a different user" },
       { status: 403 }

@@ -1,4 +1,6 @@
 import { createPrivateKey, createSign } from "crypto";
+import { lookup } from "dns/promises";
+import { validateServerConfig } from "@/lib/server/config";
 
 type VapidConfig = {
   publicKey: string;
@@ -40,6 +42,7 @@ function derToJose(der: Buffer, size = 32): Buffer {
 }
 
 function getVapidConfig(): VapidConfig {
+  validateServerConfig();
   const publicKey = process.env.VAPID_PUBLIC_KEY?.trim() ?? "";
   const privateKey = process.env.VAPID_PRIVATE_KEY?.trim() ?? "";
   const subject = process.env.VAPID_SUBJECT?.trim() || "mailto:admin@example.com";
@@ -47,6 +50,40 @@ function getVapidConfig(): VapidConfig {
     throw new Error("Missing VAPID_PUBLIC_KEY or VAPID_PRIVATE_KEY");
   }
   return { publicKey, privateKey, subject };
+}
+
+function isPrivateIp(ip: string): boolean {
+  if (ip === "127.0.0.1" || ip === "::1") return true;
+  if (ip.startsWith("10.")) return true;
+  if (ip.startsWith("192.168.")) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
+  if (ip.startsWith("169.254.")) return true;
+  if (ip.toLowerCase().startsWith("fc") || ip.toLowerCase().startsWith("fd")) return true;
+  return false;
+}
+
+async function validatePushEndpointSafety(endpoint: string): Promise<void> {
+  const url = new URL(endpoint);
+  if (url.protocol !== "https:") {
+    throw new Error("Push endpoint must use HTTPS");
+  }
+
+  const allowlist = (process.env.PUSH_ENDPOINT_ALLOWLIST ?? "")
+    .split(",")
+    .map((v) => v.trim().toLowerCase())
+    .filter(Boolean);
+  if (allowlist.length > 0) {
+    const host = url.hostname.toLowerCase();
+    const allowed = allowlist.some((domain) => host === domain || host.endsWith(`.${domain}`));
+    if (!allowed) {
+      throw new Error("Push endpoint hostname is not in allowlist");
+    }
+  }
+
+  const resolved = await lookup(url.hostname, { all: true });
+  if (resolved.some((r) => isPrivateIp(r.address))) {
+    throw new Error("Push endpoint resolves to private network address");
+  }
 }
 
 function createVapidJwt(audience: string, cfg: VapidConfig): string {
@@ -81,6 +118,7 @@ function createVapidJwt(audience: string, cfg: VapidConfig): string {
 
 export async function sendWebPush(endpoint: string): Promise<{ ok: boolean; status?: number; error?: string }> {
   try {
+    await validatePushEndpointSafety(endpoint);
     const cfg = getVapidConfig();
     const aud = new URL(endpoint).origin;
     const jwt = createVapidJwt(aud, cfg);

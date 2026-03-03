@@ -11,10 +11,20 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   isOwn: boolean;
+  senderMemberId?: string;
+  senderAlias?: string;
   kind?: "text" | "file";
   fileName?: string;
   mimeType?: string;
+  attachmentId?: string;
+  wrappedFileKey?: string;
+  wrappedFileKeyVersion?: number;
+  attachmentSize?: number;
   fileDataBase64?: string;
+  replyToMessageId?: string;
+  replyToContent?: string;
+  replyToSenderAlias?: string;
+  reactions?: Array<{ emoji: string; memberId: string; alias?: string }>;
   status?: MessageStatus;
 }
 
@@ -27,6 +37,10 @@ export interface Contact {
   conversationKey: string;
   roomId: string;
   createdAt: number;
+  isGroup?: boolean;
+  groupName?: string;
+  participantLimit?: number;
+  participants?: Array<{ memberId: string; alias: string }>;
   messages?: ChatMessage[];
   latestMessage?: ChatMessage;
   unreadCount?: number;
@@ -45,7 +59,12 @@ interface SocialState {
     contacts: Contact[],
   ) => void;
   setContacts: (contacts: Contact[]) => void;
-  addContact: (nickname: string, conversationKey: string, roomId: string) => void;
+  addContact: (
+    nickname: string,
+    conversationKey: string,
+    roomId: string,
+    options?: Pick<Contact, "isGroup" | "groupName" | "participantLimit" | "participants">
+  ) => void;
   removeContact: (roomId: string) => void;
   activatePendingContact: (roomId: string) => void;
   updateConversationKey: (oldKey: string, newKey: string) => void;
@@ -55,6 +74,8 @@ interface SocialState {
   removeMessage: (conversationKey: string, messageId: string) => void;
   markContactOpened: (roomId: string) => void;
   incrementUnread: (roomId: string) => void;
+  setUnreadCount: (roomId: string, unreadCount: number) => void;
+  upsertParticipant: (roomId: string, memberId: string, alias: string) => void;
 }
 
 export const useSocialStore = create<SocialState>()(
@@ -73,7 +94,7 @@ export const useSocialStore = create<SocialState>()(
         })),
       setContacts: (contacts) => set({ contacts }),
 
-      addContact: (nickname, conversationKey, roomId) =>
+      addContact: (nickname, conversationKey, roomId, options) =>
         set((s) => {
           const existing = s.contacts.find((c) => c.roomId === roomId);
           if (existing) {
@@ -84,6 +105,10 @@ export const useSocialStore = create<SocialState>()(
                       ...c,
                       nickname: nickname || c.nickname,
                       conversationKey: conversationKey || c.conversationKey,
+                      isGroup: options?.isGroup ?? c.isGroup,
+                      groupName: options?.groupName ?? c.groupName,
+                      participantLimit: options?.participantLimit ?? c.participantLimit,
+                      participants: options?.participants ?? c.participants,
                     }
                   : c
               ),
@@ -99,6 +124,10 @@ export const useSocialStore = create<SocialState>()(
                 conversationKey,
                 roomId,
                 createdAt: Date.now(),
+                isGroup: options?.isGroup ?? false,
+                groupName: options?.groupName,
+                participantLimit: options?.participantLimit,
+                participants: options?.participants ?? [],
                 unreadCount: 0,
               },
             ],
@@ -109,7 +138,7 @@ export const useSocialStore = create<SocialState>()(
           contacts: s.contacts.filter((c) => c.roomId !== roomId),
           selectedContactId: s.selectedContactId === roomId ? null : s.selectedContactId,
         })),
-  updateConversationKey: (oldKey, newKey) =>
+      updateConversationKey: (oldKey, newKey) =>
         set((s) => ({
           contacts: s.contacts.map((c) =>
             c.conversationKey === oldKey ? { ...c, conversationKey: newKey } : c
@@ -190,6 +219,26 @@ export const useSocialStore = create<SocialState>()(
           contacts: s.contacts.map((c) =>
             c.roomId === roomId ? { ...c, unreadCount: (c.unreadCount ?? 0) + 1 } : c
           ),
+        })),
+      setUnreadCount: (roomId, unreadCount) =>
+        set((s) => ({
+          contacts: s.contacts.map((c) =>
+            c.roomId === roomId ? { ...c, unreadCount: Math.max(0, Math.floor(unreadCount)) } : c
+          ),
+        })),
+      upsertParticipant: (roomId, memberId, alias) =>
+        set((s) => ({
+          contacts: s.contacts.map((c) => {
+            if (c.roomId !== roomId) return c;
+            const participants = c.participants ?? [];
+            const existingIndex = participants.findIndex((p) => p.memberId === memberId);
+            if (existingIndex >= 0) {
+              const next = [...participants];
+              next[existingIndex] = { memberId, alias: alias || next[existingIndex].alias };
+              return { ...c, participants: next };
+            }
+            return { ...c, participants: [...participants, { memberId, alias: alias || "Unknown" }] };
+          }),
         })),
     }),
     {
