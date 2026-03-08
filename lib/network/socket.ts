@@ -183,11 +183,7 @@ export class RelaySocket {
     this.closeSocketWhenSafe(this.ws);
   }
 
-  private scheduleReconnect() {
-    this.scheduleReconnect(false);
-  }
-
-  private scheduleReconnect(closedWhileConnecting: boolean) {
+  private scheduleReconnect(closedWhileConnecting = false) {
     if (!this.allowReconnect) return;
     if (this.reconnectTimer) return;
     const attempt = this.reconnectAttempt++;

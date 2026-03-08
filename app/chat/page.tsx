@@ -981,6 +981,33 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
     []
   );
 
+  const persistDeliveredMessage = useCallback(async (roomId: string, message: ChatMessage) => {
+    const socialId = socialIdRef.current;
+    if (!socialId) {
+      return true;
+    }
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const persisted = await saveMessageToDB({
+        senderSocialId: socialId,
+        roomId,
+        message: { ...message, status: "sent" },
+      });
+      if (persisted.success) {
+        return true;
+      }
+
+      if (attempt < 2) {
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, 400 * (attempt + 1));
+        });
+      }
+    }
+
+    console.error("Failed to persist delivered message", { roomId, messageId: message.id });
+    return false;
+  }, []);
+
   const retryQueuedOutgoing = useCallback(async () => {
     const activeRoomId = contactRoomIdRef.current;
     const activeConversationKey = contactConversationKeyRef.current;
@@ -1001,16 +1028,9 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
         setMessageStatus(activeConversationKey, queuedItem.message.id, "sending");
         try {
           await sendEncryptedPayload(queuedItem.payload);
-          const persisted = await saveMessageToDB({
-            senderSocialId: socialId,
-            roomId: activeRoomId,
-            message: { ...queuedItem.message, status: "sent" },
-          });
-          if (!persisted.success) {
-            throw new Error(persisted.error || "Failed to persist queued message");
-          }
           setMessageStatus(activeConversationKey, queuedItem.message.id, "sent");
           dequeueOutboxItem(queuedItem.message.id);
+          void persistDeliveredMessage(activeRoomId, { ...queuedItem.message, status: "sent" });
         } catch {
           setMessageStatus(activeConversationKey, queuedItem.message.id, "failed");
           break;
@@ -1019,7 +1039,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
     } finally {
       retryInFlightRef.current = false;
     }
-  }, [sendEncryptedPayload, setMessageStatus]);
+  }, [persistDeliveredMessage, sendEncryptedPayload, setMessageStatus]);
 
   useEffect(() => {
     if (!contactRoomId) return;
@@ -1093,19 +1113,9 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
         replyToContent,
         replyToSenderAlias,
       });
-      const socialId = socialIdRef.current;
-      if (socialId) {
-        const persisted = await saveMessageToDB({
-          senderSocialId: socialId,
-          roomId: contact.roomId,
-          message: { ...newMessage, status: "sent" },
-        });
-        if (!persisted.success) {
-          throw new Error(persisted.error || "Failed to persist message");
-        }
-      }
       setMessageStatus(contact.conversationKey, id, "sent");
       dequeueOutboxItem(id);
+      void persistDeliveredMessage(contact.roomId, { ...newMessage, status: "sent" });
     } catch (err) {
       setMessageStatus(contact.conversationKey, id, "failed");
       const socialId = socialIdRef.current;
@@ -1134,7 +1144,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
       console.error("Failed to send message:", err);
       setError("Message queued. It will send automatically when connection is back.");
     }
-  }, [contact, message, addMessage, sendEncryptedPayload, setMessageStatus, currentMemberId, replyTarget]);
+  }, [contact, message, addMessage, persistDeliveredMessage, sendEncryptedPayload, setMessageStatus, currentMemberId, replyTarget]);
 
   const sendAttachment = useCallback(
     async (file: File) => {
@@ -1209,16 +1219,9 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
           replyToContent,
           replyToSenderAlias,
         });
-        const persisted = await saveMessageToDB({
-          senderSocialId: socialId,
-          roomId: contact.roomId,
-          message: { ...newMessage, status: "sent" },
-        });
-        if (!persisted.success) {
-          throw new Error(persisted.error || "Failed to persist attachment");
-        }
         setMessageStatus(contact.conversationKey, id, "sent");
         dequeueOutboxItem(id);
+        void persistDeliveredMessage(contact.roomId, { ...newMessage, status: "sent" });
       } catch (err) {
         setMessageStatus(contact.conversationKey, id, "failed");
         enqueueOutboxItem({
@@ -1245,7 +1248,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
         setError("Attachment queued. It will send automatically when connection is back.");
       }
     },
-    [contact, addMessage, sendEncryptedPayload, setMessageStatus, currentMemberId, socialId, replyTarget]
+    [contact, addMessage, persistDeliveredMessage, sendEncryptedPayload, setMessageStatus, currentMemberId, socialId, replyTarget]
   );
 
   const deleteMessageEverywhere = useCallback(
