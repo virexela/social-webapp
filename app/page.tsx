@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search } from "lucide-react";
+import { ChatPanel } from "@/app/chat/page";
 
 import { ContactListItem } from "@/components/ContactListItem";
 import { SettingsMenu } from "@/components/SettingsMenu";
@@ -24,6 +25,7 @@ export default function Home() {
   const contacts = useSocialStore((s) => s.contacts);
   const _hydrated = useSocialStore((s) => s._hydrated);
   const setContacts = useSocialStore((s) => s.setContacts);
+  const selectedContactId = useSocialStore((s) => s.selectedContactId);
   const setSelectedContactId = useSocialStore((s) => s.setSelectedContactId);
   const removeContact = useSocialStore((s) => s.removeContact);
   const markContactOpened = useSocialStore((s) => s.markContactOpened);
@@ -99,7 +101,7 @@ export default function Home() {
       const notifyEnabled = localStorage.getItem("notify") === "1";
       navigator.serviceWorker.controller?.postMessage({
         type: "chat_runtime_state",
-        activeRoomId: null,
+        activeRoomId: isDesktop ? selectedContactId : null,
         notificationsEnabled: notifyEnabled,
       });
     };
@@ -131,7 +133,16 @@ export default function Home() {
       navigator.serviceWorker.removeEventListener("message", onMessage);
       window.removeEventListener("focus", syncServiceWorkerState);
     };
-  }, [setUnreadCount]);
+  }, [isDesktop, selectedContactId, setUnreadCount]);
+
+  const openConversation = (roomId: string) => {
+    setSelectedContactId(roomId);
+    markContactOpened(roomId);
+    void ackRoomPushNotifications(roomId);
+    if (!isDesktop) {
+      router.push("/chat");
+    }
+  };
 
   // Detect screen size for responsive behavior
   useEffect(() => {
@@ -219,12 +230,7 @@ export default function Home() {
               {filteredContacts.map((contact) => {
                 // when a contact is clicked, remember which conversation we want
                 const handleClick = () => {
-                  // store the selected contact id (conversation key) in the global state
-                  setSelectedContactId(contact.roomId);
-                  markContactOpened(contact.roomId);
-                  void ackRoomPushNotifications(contact.roomId);
-                  // the chat page reads the ID from the store, no sensitive data in the URL
-                  router.push(`/chat`);
+                  openConversation(contact.roomId);
                 };
 
                 const latestPreview = contact.latestMessage
@@ -233,8 +239,12 @@ export default function Home() {
                         contact.latestMessage.kind === "file"
                           ? `File: ${contact.latestMessage.fileName || "Attachment"}`
                           : contact.latestMessage.content;
-                      if (contact.isGroup && contact.latestMessage.senderAlias) {
-                        return `${contact.latestMessage.senderAlias}: ${base}`;
+                      const previewAlias =
+                        (contact.isGroup && contact.latestMessage.senderMemberId
+                          ? contact.participants?.find((participant) => participant.memberId === contact.latestMessage?.senderMemberId)?.alias
+                          : undefined) || contact.latestMessage.senderAlias;
+                      if (contact.isGroup && previewAlias) {
+                        return `${previewAlias}: ${base}`;
                       }
                       return base;
                     })()
@@ -288,15 +298,11 @@ export default function Home() {
                       name={contact.nickname}
                       subtitle={latestPreview}
                       time={latestTime}
+                      online={Boolean(contact.isOnline)}
                       unreadCount={contact.unreadCount ?? 0}
                       enableSwipeDelete={!isDesktop}
                       onDelete={() => void onDeleteContact()}
-                      onClick={() => {
-                        setSelectedContactId(contact.roomId);
-                        markContactOpened(contact.roomId);
-                        void ackRoomPushNotifications(contact.roomId);
-                        router.push(`/chat`);
-                      }}
+                      onClick={() => openConversation(contact.roomId)}
                     />
                   );
                 }
@@ -308,20 +314,24 @@ export default function Home() {
       </div>
 
       {/* Conversation Area */}
-      <div className="hidden lg:flex flex-1 flex-col bg-[var(--color-bg-secondary)]">
-        <div className="flex-1 flex items-center justify-center p-8">
-          <div className="text-center space-y-4 max-w-md">
-            <div className="w-16 h-16 mx-auto bg-[var(--color-bg)] border border-[var(--color-border)] flex items-center justify-center">
-              <Search size={24} className="text-[var(--color-fg-muted)]" />
-            </div>
-            <div className="space-y-2">
-              <h2 className="text-2xl font-semibold text-[var(--color-fg-primary)]">Select a conversation</h2>
-              <p className="text-sm text-[var(--color-fg-secondary)] leading-relaxed">
-                Choose a contact from the sidebar to start chatting securely.
-              </p>
+      <div className="hidden lg:flex flex-1 min-h-0 flex-col bg-[var(--color-bg-secondary)]">
+        {selectedContactId ? (
+          <ChatPanel embedded />
+        ) : (
+          <div className="flex-1 flex items-center justify-center p-8">
+            <div className="text-center space-y-4 max-w-md">
+              <div className="w-16 h-16 mx-auto bg-[var(--color-bg)] border border-[var(--color-border)] flex items-center justify-center">
+                <Search size={24} className="text-[var(--color-fg-muted)]" />
+              </div>
+              <div className="space-y-2">
+                <h2 className="text-2xl font-semibold text-[var(--color-fg-primary)]">Select a conversation</h2>
+                <p className="text-sm text-[var(--color-fg-secondary)] leading-relaxed">
+                  Choose a contact from the sidebar to start chatting securely.
+                </p>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
 
       <AddContactButton variant="fab" />

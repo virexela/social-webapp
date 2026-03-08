@@ -4,6 +4,20 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 export type MessageStatus = "sending" | "sent" | "failed";
+export type ChatMessageKind = "text" | "file" | "group_invite" | "system";
+export type GroupInviteStatus = "pending" | "accepted" | "declined";
+export type SystemMessageType = "group_invite_accepted" | "group_invite_declined" | "group_member_joined";
+
+export interface GroupInviteMetadata {
+  groupRoomId: string;
+  groupName: string;
+  groupConversationKey: string;
+  assignedAlias: string;
+  inviterMemberId?: string;
+  inviterRoomId?: string;
+  inviteMessageId?: string;
+  status?: GroupInviteStatus;
+}
 
 export interface ChatMessage {
   id: string;
@@ -13,7 +27,7 @@ export interface ChatMessage {
   isOwn: boolean;
   senderMemberId?: string;
   senderAlias?: string;
-  kind?: "text" | "file";
+  kind?: ChatMessageKind;
   fileName?: string;
   mimeType?: string;
   attachmentId?: string;
@@ -26,6 +40,51 @@ export interface ChatMessage {
   replyToSenderAlias?: string;
   reactions?: Array<{ emoji: string; memberId: string; alias?: string }>;
   status?: MessageStatus;
+  groupInvite?: GroupInviteMetadata;
+  systemType?: SystemMessageType;
+  systemText?: string;
+}
+
+function isGeneratedParticipantAlias(alias?: string): boolean {
+  const normalized = alias?.trim().toLowerCase();
+  if (!normalized) return true;
+  return normalized === "unknown" || normalized === "peer-unknown" || normalized.startsWith("peer-");
+}
+
+function mergeParticipantAlias(currentAlias?: string, nextAlias?: string): string {
+  const current = currentAlias?.trim();
+  const next = nextAlias?.trim();
+
+  if (!current) return next || "Unknown";
+  if (!next) return current;
+  if (current === "You") return current;
+  if (next === "You") return current;
+  if (!isGeneratedParticipantAlias(current) && isGeneratedParticipantAlias(next)) {
+    return current;
+  }
+  return next;
+}
+
+function mergeMessagesById(messages: ChatMessage[]): ChatMessage[] {
+  const merged = new Map<string, ChatMessage>();
+
+  for (const message of messages) {
+    const existing = merged.get(message.id);
+    if (!existing) {
+      merged.set(message.id, message);
+      continue;
+    }
+
+    merged.set(message.id, {
+      ...existing,
+      ...message,
+      timestamp: Math.min(existing.timestamp, message.timestamp),
+      status: message.status ?? existing.status,
+      reactions: message.reactions ?? existing.reactions,
+    });
+  }
+
+  return Array.from(merged.values()).sort((a, b) => a.timestamp - b.timestamp);
 }
 
 export type ContactStatus = "online" | "offline" | "pending" | "invite_expired" | "connected";
@@ -34,6 +93,7 @@ const STORE_PERSIST_KEY = "social_store_v1";
 export interface Contact {
   nickname: string;
   status: ContactStatus;
+  isOnline?: boolean;
   conversationKey: string;
   roomId: string;
   createdAt: number;
@@ -75,6 +135,7 @@ interface SocialState {
   markContactOpened: (roomId: string) => void;
   incrementUnread: (roomId: string) => void;
   setUnreadCount: (roomId: string, unreadCount: number) => void;
+  setPresenceByRoom: (onlineByRoom: Record<string, boolean>) => void;
   upsertParticipant: (roomId: string, memberId: string, alias: string) => void;
 }
 
@@ -105,6 +166,7 @@ export const useSocialStore = create<SocialState>()(
                       ...c,
                       nickname: nickname || c.nickname,
                       conversationKey: conversationKey || c.conversationKey,
+                      isOnline: c.isOnline ?? false,
                       isGroup: options?.isGroup ?? c.isGroup,
                       groupName: options?.groupName ?? c.groupName,
                       participantLimit: options?.participantLimit ?? c.participantLimit,
@@ -121,6 +183,7 @@ export const useSocialStore = create<SocialState>()(
               {
                 nickname,
                 status: "pending",
+                isOnline: false,
                 conversationKey,
                 roomId,
                 createdAt: Date.now(),
@@ -148,7 +211,7 @@ export const useSocialStore = create<SocialState>()(
       activatePendingContact: (roomId) =>
         set((s) => ({
           contacts: s.contacts.map((c) =>
-            c.roomId === roomId ? { ...c, status: "connected" } : c
+            c.roomId === roomId ? { ...c, status: "connected", isOnline: c.isOnline ?? false } : c
           ),
         })),
 
@@ -156,8 +219,9 @@ export const useSocialStore = create<SocialState>()(
         set((s) => {
           const contacts = s.contacts.map((contact) => {
             if (contact.conversationKey === conversationKey) {
-              const messages = contact.messages ? [...contact.messages, message] : [message];
-              return { ...contact, messages, latestMessage: message };
+              const messages = mergeMessagesById(contact.messages ? [...contact.messages, message] : [message]);
+              const latestMessage = messages.length > 0 ? messages[messages.length - 1] : contact.latestMessage;
+              return { ...contact, messages, latestMessage };
             }
             return contact;
           });
@@ -168,7 +232,7 @@ export const useSocialStore = create<SocialState>()(
         set((s) => {
           const contacts = s.contacts.map((contact) => {
             if (contact.conversationKey === conversationKey) {
-              const sorted = [...messages].sort((a, b) => a.timestamp - b.timestamp);
+              const sorted = mergeMessagesById(messages);
               const latestMessage = sorted.length > 0 ? sorted[sorted.length - 1] : contact.latestMessage;
               return { ...contact, messages: sorted, latestMessage };
             }
@@ -226,6 +290,14 @@ export const useSocialStore = create<SocialState>()(
             c.roomId === roomId ? { ...c, unreadCount: Math.max(0, Math.floor(unreadCount)) } : c
           ),
         })),
+      setPresenceByRoom: (onlineByRoom) =>
+        set((s) => ({
+          contacts: s.contacts.map((c) =>
+            c.status === "connected"
+              ? { ...c, isOnline: Boolean(onlineByRoom[c.roomId]) }
+              : { ...c, isOnline: false }
+          ),
+        })),
       upsertParticipant: (roomId, memberId, alias) =>
         set((s) => ({
           contacts: s.contacts.map((c) => {
@@ -234,10 +306,16 @@ export const useSocialStore = create<SocialState>()(
             const existingIndex = participants.findIndex((p) => p.memberId === memberId);
             if (existingIndex >= 0) {
               const next = [...participants];
-              next[existingIndex] = { memberId, alias: alias || next[existingIndex].alias };
+              next[existingIndex] = {
+                memberId,
+                alias: mergeParticipantAlias(next[existingIndex].alias, alias),
+              };
               return { ...c, participants: next };
             }
-            return { ...c, participants: [...participants, { memberId, alias: alias || "Unknown" }] };
+            return {
+              ...c,
+              participants: [...participants, { memberId, alias: mergeParticipantAlias(undefined, alias) }],
+            };
           }),
         })),
     }),

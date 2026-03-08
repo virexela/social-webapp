@@ -71,6 +71,10 @@ export function getSessionsCollection() {
   return getDb().collection("sessions");
 }
 
+export function getPresenceCollection() {
+  return getDb().collection("presence");
+}
+
 export function getPushNotificationsCollection() {
   return getDb().collection("push_notifications");
 }
@@ -109,6 +113,7 @@ async function ensureIndexes(): Promise<void> {
       const pushSubscriptions = getPushSubscriptionsCollection();
       const roomMembers = getRoomMembersCollection();
       const sessions = getSessionsCollection();
+      const presence = getPresenceCollection();
       const pushNotifications = getPushNotificationsCollection();
       const pushMetrics = getPushMetricsCollection();
       const attachments = getAttachmentsCollection();
@@ -225,6 +230,9 @@ async function ensureIndexes(): Promise<void> {
         sessions.createIndex({ tokenHash: 1 }, { unique: true }),
         sessions.createIndex({ socialId: 1 }),
         sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+
+        presence.createIndex({ memberId: 1 }, { unique: true }),
+        presence.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
 
         roomMembers.createIndex(
           { memberId: 1, roomId: 1 },

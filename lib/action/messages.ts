@@ -27,6 +27,9 @@ export async function saveMessageToDB(input: PersistMessageInput): Promise<{ suc
         replyToContent: input.message.replyToContent,
         replyToSenderAlias: input.message.replyToSenderAlias,
         reactions: input.message.reactions ?? [],
+        groupInvite: input.message.groupInvite,
+        systemType: input.message.systemType,
+        systemText: input.message.systemText,
       }),
       input.message.conversationKey
     );
@@ -110,7 +113,7 @@ export async function getMessagesFromDB(
 
         let parsed: {
           content: string;
-          kind?: "text" | "file";
+          kind?: "text" | "file" | "group_invite" | "system";
           senderMemberId?: string;
           senderAlias?: string;
           fileName?: string;
@@ -124,12 +127,15 @@ export async function getMessagesFromDB(
           replyToContent?: string;
           replyToSenderAlias?: string;
           reactions?: Array<{ emoji?: string; memberId?: string; alias?: string }>;
+          groupInvite?: ChatMessage["groupInvite"];
+          systemType?: ChatMessage["systemType"];
+          systemText?: string;
         };
         try {
           const parsedRaw = JSON.parse(decryptedPayload) as {
             content: string;
             text?: string;
-            kind?: "text" | "file";
+            kind?: "text" | "file" | "group_invite" | "system";
             type?: "chat" | "file";
             senderMemberId?: string;
             senderAlias?: string;
@@ -145,6 +151,9 @@ export async function getMessagesFromDB(
             replyToContent?: string;
             replyToSenderAlias?: string;
             reactions?: Array<{ emoji?: string; memberId?: string; alias?: string }>;
+            groupInvite?: ChatMessage["groupInvite"];
+            systemType?: ChatMessage["systemType"];
+            systemText?: string;
           };
 
           const normalizedKind =
@@ -174,6 +183,9 @@ export async function getMessagesFromDB(
                   .filter((r) => r && typeof r.emoji === "string" && typeof r.memberId === "string")
                   .map((r) => ({ emoji: String(r.emoji), memberId: String(r.memberId), alias: r.alias ? String(r.alias) : undefined }))
               : [],
+            groupInvite: parsedRaw.groupInvite,
+            systemType: parsedRaw.systemType,
+            systemText: typeof parsedRaw.systemText === "string" ? parsedRaw.systemText : undefined,
           };
         } catch {
           parsed = { content: decryptedPayload, kind: "text" };
@@ -204,6 +216,9 @@ export async function getMessagesFromDB(
               return Boolean(r && typeof r.emoji === "string" && typeof r.memberId === "string");
             })
             .map((r) => ({ emoji: r.emoji, memberId: r.memberId, alias: r.alias })),
+          groupInvite: parsed.groupInvite,
+          systemType: parsed.systemType,
+          systemText: parsed.systemText,
           timestamp: Number(raw.timestamp),
           isOwn:
             Boolean(raw.isOwn) ||

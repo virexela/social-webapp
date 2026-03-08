@@ -1,4 +1,4 @@
-import { Contact } from "@/lib/state/store";
+import { ChatMessage, Contact } from "@/lib/state/store";
 import { decryptMessageFromStorage, encryptMessageForStorage } from "@/lib/protocol/messageCrypto";
 import { fetchWithAutoSession } from "@/lib/action/authFetch";
 
@@ -42,6 +42,9 @@ export async function saveContactToDB(socialId: string, contact: Contact): Promi
             wrappedFileKey: contact.latestMessage.wrappedFileKey,
             wrappedFileKeyVersion: contact.latestMessage.wrappedFileKeyVersion,
             attachmentSize: contact.latestMessage.attachmentSize,
+            groupInvite: contact.latestMessage.groupInvite,
+            systemType: contact.latestMessage.systemType,
+            systemText: contact.latestMessage.systemText,
           }
         : null,
     };
@@ -138,13 +141,16 @@ export async function getContactsFromDB(socialId: string): Promise<{ success: bo
             isOwn: boolean;
             senderMemberId?: string;
             senderAlias?: string;
-            kind?: "text" | "file";
+            kind?: "text" | "file" | "group_invite" | "system";
             fileName?: string;
             mimeType?: string;
             attachmentId?: string;
             wrappedFileKey?: string;
             wrappedFileKeyVersion?: number;
             attachmentSize?: number;
+            groupInvite?: ChatMessage["groupInvite"];
+            systemType?: ChatMessage["systemType"];
+            systemText?: string;
           } | null;
         };
         contacts.push({
@@ -179,6 +185,9 @@ export async function getContactsFromDB(socialId: string): Promise<{ success: bo
                 wrappedFileKey: parsed.latestMessage.wrappedFileKey,
                 wrappedFileKeyVersion: parsed.latestMessage.wrappedFileKeyVersion,
                 attachmentSize: parsed.latestMessage.attachmentSize,
+                groupInvite: parsed.latestMessage.groupInvite,
+                systemType: parsed.latestMessage.systemType,
+                systemText: parsed.latestMessage.systemText,
               }
             : undefined,
         });

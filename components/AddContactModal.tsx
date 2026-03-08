@@ -12,21 +12,29 @@ import { joinInviteRoom } from "@/lib/utils/socket";
 import { joinRoomMembership } from "@/lib/action/rooms";
 import { fetchRelayJoinToken } from "@/lib/action/relay";
 import { saveContactToDB } from "@/lib/action/contacts";
+import { saveMessageToDB } from "@/lib/action/messages";
+import { sendEncryptedRoomPayload, type OutgoingEncryptedPayload } from "@/lib/action/chatTransport";
 
 interface AddContactModalProps {
   open: boolean;
   onClose: () => void;
-  initialStep?: "mode-select" | "send-invite" | "accept-invite";
+  initialStep?: "mode-select" | "send-invite" | "accept-invite" | "create-group";
 }
 
-type Step = "mode-select" | "send-invite" | "accept-invite";
-const DEFAULT_INVITE_LIMIT = 2;
-const MAX_INVITE_LIMIT = 50;
+type Step = "mode-select" | "send-invite" | "accept-invite" | "create-group";
+const CONTACT_INVITE_LIMIT = 2;
 
 function normalizeInviteLimit(value: string): number {
   const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) return DEFAULT_INVITE_LIMIT;
-  return Math.max(DEFAULT_INVITE_LIMIT, Math.min(MAX_INVITE_LIMIT, parsed));
+  if (!Number.isFinite(parsed)) return CONTACT_INVITE_LIMIT;
+  return CONTACT_INVITE_LIMIT;
+}
+
+function createMessageId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `msg_${crypto.randomUUID()}`;
+  }
+  return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export function AddContactModal({ open, onClose, initialStep }: AddContactModalProps) {
@@ -40,11 +48,11 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
   const [conversationKey, setConversationKey] = useState<Uint8Array>(new Uint8Array());
   const [pastedInvite, setPastedInvite] = useState<string>("");
   const [contactName, setContactName] = useState<string>("");
-  const [inviteLimit, setInviteLimit] = useState<string>(String(DEFAULT_INVITE_LIMIT));
   const [copied, setCopied] = useState(false);
   const [showQR, setShowQR] = useState(false);
   const [error, setError] = useState<string>("");
   const [scanningQR, setScanningQR] = useState(false);
+  const [selectedGroupContacts, setSelectedGroupContacts] = useState<string[]>([]);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const scanControlsRef = useRef<IScannerControls | null>(null);
@@ -53,7 +61,9 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
   const inviteAcceptedRoomsRef = useRef<Set<string>>(new Set());
 
   // selected contact id is managed elsewhere; not needed here
+  const contacts = useSocialStore((s) => s.contacts);
   const addContact = useSocialStore((s) => s.addContact);
+  const addMessage = useSocialStore((s) => s.addMessage);
   const activatePendingContact = useSocialStore((s) => s.activatePendingContact);
 
   // we no longer track a per-user identifier; room membership is anonymous
@@ -81,12 +91,62 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
     [activatePendingContact, closeInviteSocket]
   );
 
+  const availableGroupContacts = contacts.filter((contact) => !contact.isGroup && contact.status === "connected");
+
+  const persistContactSnapshot = useCallback((socialId: string, targetRoomId: string) => {
+    const contact = useSocialStore.getState().contacts.find((entry) => entry.roomId === targetRoomId);
+    if (contact) {
+      void saveContactToDB(socialId, contact);
+    }
+  }, []);
+
+  const persistMessageSnapshot = useCallback(
+    async (socialId: string, roomId: string, message: {
+      id: string;
+      content: string;
+      conversationKey: string;
+      timestamp: number;
+      isOwn: boolean;
+      senderMemberId?: string;
+      senderAlias?: string;
+      kind?: "text" | "file" | "group_invite" | "system";
+      groupInvite?: import("@/lib/state/store").GroupInviteMetadata;
+      systemType?: import("@/lib/state/store").SystemMessageType;
+      systemText?: string;
+      status?: "sending" | "sent" | "failed";
+    }) => {
+      await saveMessageToDB({
+        senderSocialId: socialId,
+        roomId,
+        message,
+      });
+    },
+    []
+  );
+
+  const sendPrivateGroupInvite = useCallback(
+    async (
+      socialId: string,
+      privateContact: (typeof contacts)[number],
+      payload: Extract<OutgoingEncryptedPayload, { type: "group_invite" }>,
+      senderMemberId?: string
+    ) => {
+      await sendEncryptedRoomPayload({
+        roomId: privateContact.roomId,
+        conversationKey: privateContact.conversationKey,
+        socialId,
+        payload: { ...payload, senderMemberId },
+      });
+    },
+    [contacts]
+  );
+
 
   const startSendInvite = useCallback(async () => {
     setBusy(true);
 
     try {
-      const nextLimit = normalizeInviteLimit(inviteLimit);
+      const nextLimit = CONTACT_INVITE_LIMIT;
       const nextRoomId = crypto.randomUUID();
       // this simplified app uses a 16‑byte random connection identifier
       const connId = crypto.getRandomValues(new Uint8Array(16));
@@ -95,7 +155,6 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
       setInviteString(invite);
       setRoomId(nextRoomId);
       setConversationKey(connId);
-      setInviteLimit(String(nextLimit));
       await startInviteListener(nextRoomId, nextLimit);
 
       setStep("send-invite");
@@ -104,7 +163,7 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
       setError((e as Error)?.message || "Failed to create invite");
       setBusy(false);
     }
-  }, [inviteLimit, startInviteListener]);
+  }, [startInviteListener]);
 
   useEffect(() => {
     if (!open) {
@@ -113,12 +172,12 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
       setRoomId("");
       setConversationKey(new Uint8Array());
       setContactName("");
-      setInviteLimit(String(DEFAULT_INVITE_LIMIT));
       setPastedInvite("");
       setCopied(false);
       setShowQR(false);
       setError("");
       setScanningQR(false);
+      setSelectedGroupContacts([]);
     } else {
       
       if (initialStep === "send-invite") {
@@ -239,12 +298,12 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
     setStep("mode-select");
     setInviteString("");
     setContactName("");
-    setInviteLimit(String(DEFAULT_INVITE_LIMIT));
     setCopied(false);
     setShowQR(false);
     setPastedInvite("");
     setError("");
     setScanningQR(false);
+    setSelectedGroupContacts([]);
   }
 
   function generateInviteString(roomId: string, inviteBytes: Uint8Array, limit: number): string {
@@ -271,28 +330,20 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
 
     if (step === "send-invite" && inviteString) {
       // conversationKey already holds our 16‑byte connection id
-      const normalizedLimit = normalizeInviteLimit(inviteLimit);
       addContact(name, toHex(conversationKey), roomId, {
-        isGroup: normalizedLimit > 2,
-        groupName: normalizedLimit > 2 ? name : undefined,
-        participantLimit: normalizedLimit,
+        isGroup: false,
+        participantLimit: CONTACT_INVITE_LIMIT,
         participants: [],
       });
       const socialId = localStorage.getItem("social_id");
       if (socialId) {
-        const contact = useSocialStore.getState().contacts.find((c) => c.roomId === roomId);
-        if (contact) {
-          void saveContactToDB(socialId, contact);
-        }
+        persistContactSnapshot(socialId, roomId);
         void joinRoomMembership(socialId, roomId);
       }
       if (inviteAcceptedRoomsRef.current.has(roomId)) {
         activatePendingContact(roomId);
         if (socialId) {
-          const contact = useSocialStore.getState().contacts.find((c) => c.roomId === roomId);
-          if (contact) {
-            void saveContactToDB(socialId, { ...contact, status: "connected" });
-          }
+          persistContactSnapshot(socialId, roomId);
         }
       }
     }
@@ -300,6 +351,116 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
     reset();
     onClose();
   }
+
+  const createGroup = useCallback(async () => {
+    const socialId = localStorage.getItem("social_id") ?? "";
+    const groupName = contactName.trim();
+    if (!socialId || !groupName) {
+      setError("Enter a group name");
+      return;
+    }
+    if (selectedGroupContacts.length === 0) {
+      setError("Select at least one contact");
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+
+    try {
+      const groupRoomId = crypto.randomUUID();
+      const groupConversationKeyBytes = crypto.getRandomValues(new Uint8Array(16));
+      const groupConversationKey = toHex(groupConversationKeyBytes);
+      addContact(groupName, groupConversationKey, groupRoomId, {
+        isGroup: true,
+        groupName,
+        participantLimit: selectedGroupContacts.length + 1,
+        participants: [],
+      });
+      activatePendingContact(groupRoomId);
+
+      const creatorJoin = await joinRoomMembership(socialId, groupRoomId);
+      const creatorGroupMemberId = creatorJoin.memberId;
+      if (!creatorJoin.success || !creatorGroupMemberId) {
+        throw new Error(creatorJoin.error || "Unable to join new group");
+      }
+
+      useSocialStore.getState().upsertParticipant(groupRoomId, creatorGroupMemberId, "You");
+      persistContactSnapshot(socialId, groupRoomId);
+
+      for (const privateRoomId of selectedGroupContacts) {
+        const privateContact = useSocialStore.getState().contacts.find((entry) => entry.roomId === privateRoomId);
+        if (!privateContact) continue;
+
+        const privateJoin = await joinRoomMembership(socialId, privateContact.roomId);
+        const inviteMessageId = createMessageId();
+        const invitePayload: Extract<OutgoingEncryptedPayload, { type: "group_invite" }> = {
+          type: "group_invite",
+          messageId: inviteMessageId,
+          groupRoomId,
+          groupName,
+          groupConversationKey,
+          assignedAlias: privateContact.nickname,
+          inviterMemberId: creatorGroupMemberId,
+          inviterRoomId: privateContact.roomId,
+        };
+
+        addMessage(
+          {
+            id: inviteMessageId,
+            content: `Group invite: ${groupName}`,
+            conversationKey: privateContact.conversationKey,
+            timestamp: Date.now(),
+            isOwn: true,
+            senderMemberId: privateJoin.memberId,
+            kind: "group_invite",
+            groupInvite: {
+              groupRoomId,
+              groupName,
+              groupConversationKey,
+              assignedAlias: privateContact.nickname,
+              inviterMemberId: creatorGroupMemberId,
+              inviterRoomId: privateContact.roomId,
+              inviteMessageId,
+              status: "pending",
+            },
+            status: "sent",
+          },
+          privateContact.conversationKey
+        );
+
+        await persistMessageSnapshot(socialId, privateContact.roomId, {
+          id: inviteMessageId,
+          content: `Group invite: ${groupName}`,
+          conversationKey: privateContact.conversationKey,
+          timestamp: Date.now(),
+          isOwn: true,
+          senderMemberId: privateJoin.memberId,
+          kind: "group_invite",
+          groupInvite: {
+            groupRoomId,
+            groupName,
+            groupConversationKey,
+            assignedAlias: privateContact.nickname,
+            inviterMemberId: creatorGroupMemberId,
+            inviterRoomId: privateContact.roomId,
+            inviteMessageId,
+            status: "pending",
+          },
+          status: "sent",
+        });
+
+        await sendPrivateGroupInvite(socialId, privateContact, invitePayload, privateJoin.memberId);
+      }
+
+      reset();
+      onClose();
+    } catch (e) {
+      setError((e as Error)?.message || "Failed to create group");
+    } finally {
+      setBusy(false);
+    }
+  }, [activatePendingContact, addContact, addMessage, contactName, onClose, persistContactSnapshot, persistMessageSnapshot, selectedGroupContacts, sendPrivateGroupInvite]);
 
   const acceptInvite = useCallback(async () => {
     if (!pastedInvite.trim()) {
@@ -315,7 +476,7 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
       const inviteText = new TextDecoder().decode(inviteBytes);
       const [roomId, inviteHex, rawLimit] = inviteText.split(":");
       if (!roomId || !inviteHex) throw new Error("Invalid invite format");
-      const parsedLimit = normalizeInviteLimit(rawLimit ?? String(DEFAULT_INVITE_LIMIT));
+      const parsedLimit = normalizeInviteLimit(rawLimit ?? String(CONTACT_INVITE_LIMIT));
 
       if (!/^[0-9a-fA-F]+$/.test(inviteHex) || inviteHex.length % 2 !== 0) {
         throw new Error("Invalid invite data");
@@ -334,25 +495,18 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
       if (!name) return;
 
       addContact(name, toHex(connectionId), roomId, {
-        isGroup: parsedLimit > 2,
-        groupName: parsedLimit > 2 ? name : undefined,
+        isGroup: false,
         participantLimit: parsedLimit,
         participants: [],
       });
       const socialId = localStorage.getItem("social_id");
       if (socialId) {
-        const contact = useSocialStore.getState().contacts.find((c) => c.roomId === roomId);
-        if (contact) {
-          void saveContactToDB(socialId, contact);
-        }
+        persistContactSnapshot(socialId, roomId);
         void joinRoomMembership(socialId, roomId);
       }
       activatePendingContact(roomId);
       if (socialId) {
-        const contact = useSocialStore.getState().contacts.find((c) => c.roomId === roomId);
-        if (contact) {
-          void saveContactToDB(socialId, { ...contact, status: "connected" });
-        }
+        persistContactSnapshot(socialId, roomId);
       }
 
       const token = await fetchRelayJoinToken(roomId, "invite", socialId || undefined);
@@ -398,6 +552,7 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
                 {step === "mode-select" && "Add contact"}
                 {step === "send-invite" && "Send invite"}
                 {step === "accept-invite" && "Accept invite"}
+                {step === "create-group" && "Create group"}
               </h2>
               <button
                 type="button"
@@ -409,8 +564,21 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
             </div>
 
             <div className="px-6 py-5">
+              {error ? (
+                <div className="mb-4 text-sm text-red-600 bg-red-50 dark:bg-red-950 px-3 py-2">
+                  {error}
+                </div>
+              ) : null}
+
               {step === "mode-select" ? (
                 <div className="space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => setStep("create-group")}
+                    className="w-full border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 px-4 py-3 text-left font-medium transition-colors"
+                  >
+                    Create group
+                  </button>
                   <button
                     type="button"
                     onClick={startSendInvite}
@@ -430,12 +598,12 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
               ) : step === "send-invite" ? (
                 <div className="space-y-4">
                   <div className="text-sm text-gray-600 dark:text-gray-400">
-                    Share this invite code privately or as QR. Only the configured number of participants can join.
+                    Share this code privately or as QR. It can be used by one person only.
                   </div>
 
                   <div className="space-y-1">
                     <label className="text-sm text-gray-700 dark:text-gray-300">
-                      Contact / Group name
+                      Contact name
                     </label>
                     <input
                       value={contactName}
@@ -443,23 +611,6 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
                       placeholder="Enter name"
                       className="w-full border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 px-3 py-2 text-sm text-black dark:text-white"
                     />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-sm text-gray-700 dark:text-gray-300">
-                      Invite limit
-                    </label>
-                    <input
-                      type="number"
-                      min={DEFAULT_INVITE_LIMIT}
-                      max={MAX_INVITE_LIMIT}
-                      value={inviteLimit}
-                      onChange={(e) => setInviteLimit(e.target.value)}
-                      className="w-full border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 px-3 py-2 text-sm text-black dark:text-white"
-                    />
-                    <div className="text-xs text-gray-500 dark:text-gray-400">
-                      Default is {DEFAULT_INVITE_LIMIT}. Includes you.
-                    </div>
                   </div>
 
                   {!showQR ? (
@@ -512,6 +663,84 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
                   >
                     Done
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setStep("mode-select")}
+                    className="w-full border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 px-4 py-2 text-sm font-medium transition-colors"
+                  >
+                    Back
+                  </button>
+                </div>
+              ) : step === "create-group" ? (
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    <label className="text-sm text-gray-700 dark:text-gray-300">
+                      Group name
+                    </label>
+                    <input
+                      value={contactName}
+                      onChange={(e) => setContactName(e.target.value)}
+                      placeholder="Enter group name"
+                      className="w-full border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 px-3 py-2 text-sm text-black dark:text-white"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-sm text-gray-700 dark:text-gray-300">Select contacts</div>
+                    <div className="max-h-64 overflow-y-auto border border-gray-200 dark:border-gray-800 divide-y divide-gray-200 dark:divide-gray-800">
+                      {availableGroupContacts.length === 0 ? (
+                        <div className="px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
+                          No connected contacts available.
+                        </div>
+                      ) : (
+                        availableGroupContacts.map((contact) => {
+                          const checked = selectedGroupContacts.includes(contact.roomId);
+                          return (
+                            <label
+                              key={contact.roomId}
+                              className="flex items-center gap-3 px-3 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) => {
+                                  setSelectedGroupContacts((prev) =>
+                                    e.target.checked
+                                      ? [...prev, contact.roomId]
+                                      : prev.filter((roomId) => roomId !== contact.roomId)
+                                  );
+                                }}
+                              />
+                              <div className="min-w-0">
+                                <div className="text-sm text-black dark:text-white truncate">{contact.nickname}</div>
+                                <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                                  {contact.latestMessage?.content || "No recent messages"}
+                                </div>
+                              </div>
+                            </label>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => void createGroup()}
+                    disabled={busy || !contactName.trim() || selectedGroupContacts.length === 0}
+                    className="w-full bg-black dark:bg-white text-white dark:text-black px-4 py-2 text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+                  >
+                    Create group
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setStep("mode-select")}
+                    className="w-full border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 px-4 py-2 text-sm font-medium transition-colors"
+                  >
+                    Back
+                  </button>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -530,12 +759,6 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
                   <div className="text-sm text-gray-600 dark:text-gray-400">
                     Paste the invite code (auto-accepts) or scan a QR code.
                   </div>
-
-                  {error && (
-                    <div className="text-sm text-red-600 bg-red-50 dark:bg-red-950 px-3 py-2">
-                      {error}
-                    </div>
-                  )}
 
                   {scanningQR && (
                     <div className="space-y-2">
@@ -603,7 +826,7 @@ export function AddContactModal({ open, onClose, initialStep }: AddContactModalP
 
 export function AddContactButton({ variant = "inline" }: { variant?: "inline" | "fab" }) {
   const [open, setOpen] = useState(false);
-  const [initialStep, setInitialStep] = useState<"mode-select" | "send-invite" | "accept-invite" | undefined>(undefined);
+  const [initialStep, setInitialStep] = useState<"mode-select" | "send-invite" | "accept-invite" | "create-group" | undefined>(undefined);
   const [expanded, setExpanded] = useState(false);
   const [isDesktop, setIsDesktop] = useState(false);
 
@@ -619,12 +842,12 @@ export function AddContactButton({ variant = "inline" }: { variant?: "inline" | 
 
   if (variant === "fab") {
     if (isDesktop) {
-      // Desktop: Click to expand to 3-button box
+      // Desktop: Click to expand to quick actions
       return (
         <>
           <motion.div
             className="fixed z-50"
-            animate={expanded ? { right: 16, bottom: 24, width: 240, height: 200 } : { right: 16, bottom: 24, width: 56, height: 56 }}
+            animate={expanded ? { right: 16, bottom: 24, width: 240, height: 248 } : { right: 16, bottom: 24, width: 56, height: 56 }}
             transition={{ duration: 0.3, ease: "easeOut" }}
           >
             <button
@@ -635,6 +858,17 @@ export function AddContactButton({ variant = "inline" }: { variant?: "inline" | 
             >
               {expanded ? (
                 <div className="w-full h-full flex flex-col p-2">
+                  <div
+                    className="flex-1 mb-2 bg-[var(--color-interactive-inverse)] text-[var(--color-fg-primary)] flex items-center justify-center cursor-pointer font-medium rounded border border-[var(--color-border)]"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setInitialStep("create-group");
+                      setOpen(true);
+                      setExpanded(false);
+                    }}
+                  >
+                    Create Group
+                  </div>
                   <div
                     className="flex-1 mb-2 bg-[var(--color-interactive-inverse)] text-[var(--color-fg-primary)] flex items-center justify-center cursor-pointer font-medium rounded border border-[var(--color-border)]"
                     onClick={(e) => {
@@ -703,7 +937,18 @@ export function AddContactButton({ variant = "inline" }: { variant?: "inline" | 
               {expanded ? (
                 <div className="w-full h-full flex">
                   <div
-                    className="w-1/2 bg-[var(--color-interactive-inverse)] text-[var(--color-fg-primary)] flex items-center justify-center cursor-pointer font-medium"
+                    className="w-1/3 bg-[var(--color-interactive-inverse)] text-[var(--color-fg-primary)] flex items-center justify-center cursor-pointer font-medium text-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setInitialStep("create-group");
+                      setOpen(true);
+                      setExpanded(false);
+                    }}
+                  >
+                    Group
+                  </div>
+                  <div
+                    className="w-1/3 bg-[var(--color-interactive-inverse)] text-[var(--color-fg-primary)] flex items-center justify-center cursor-pointer font-medium text-sm"
                     onClick={(e) => {
                       e.stopPropagation();
                       setInitialStep("send-invite");
@@ -714,7 +959,7 @@ export function AddContactButton({ variant = "inline" }: { variant?: "inline" | 
                     Send
                   </div>
                   <div
-                    className="w-1/2 bg-[var(--color-fg-primary)] text-[var(--color-interactive-inverse)] flex items-center justify-center cursor-pointer font-medium"
+                    className="w-1/3 bg-[var(--color-fg-primary)] text-[var(--color-interactive-inverse)] flex items-center justify-center cursor-pointer font-medium text-sm"
                     onClick={(e) => {
                       e.stopPropagation();
                       setInitialStep("accept-invite");

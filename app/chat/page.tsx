@@ -26,6 +26,7 @@ import {
   uploadEncryptedAttachment,
 } from "@/lib/action/attachments";
 import { decryptDownloadedAttachment, encryptFileForAttachment } from "@/lib/protocol/fileCrypto";
+import { sendEncryptedRoomPayload } from "@/lib/action/chatTransport";
 
 const EMPTY_MESSAGES: Array<import("@/lib/state/store").ChatMessage> = [];
 
@@ -64,12 +65,47 @@ type EncryptedPayload =
       senderMemberId?: string;
       senderAlias?: string;
     }
+  | {
+      type: "group_invite";
+      messageId: string;
+      groupRoomId: string;
+      groupName: string;
+      groupConversationKey: string;
+      assignedAlias: string;
+      inviterMemberId?: string;
+      inviterRoomId?: string;
+      senderMemberId?: string;
+    }
+  | {
+      type: "group_invite_response";
+      messageId: string;
+      inviteMessageId: string;
+      groupRoomId: string;
+      groupName: string;
+      response: "accepted" | "declined";
+      groupMemberId?: string;
+      senderMemberId?: string;
+    }
+  | {
+      type: "group_member_joined";
+      messageId: string;
+      groupRoomId: string;
+      groupName: string;
+      memberAlias: string;
+      senderMemberId?: string;
+    }
   | { type: "message_deleted"; roomId: string; messageId: string }
   | { type: "contact_removed"; roomId: string };
 
 function defaultAliasForMember(memberId?: string): string {
   if (!memberId) return "peer-unknown";
   return `peer-${memberId.slice(0, 6)}`;
+}
+
+function isGeneratedAlias(alias?: string): boolean {
+  const normalized = alias?.trim().toLowerCase();
+  if (!normalized) return true;
+  return normalized === "unknown" || normalized === "peer-unknown" || normalized.startsWith("peer-");
 }
 
 function formatMessageTime(timestamp: number): string {
@@ -87,7 +123,26 @@ function summarizeMessageForReply(message: ChatMessage): string {
   return message.content;
 }
 
-export default function ChatPage() {
+function createMessageId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `msg_${crypto.randomUUID()}`;
+  }
+  return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function resolveOutgoingSenderAlias(
+  isGroup: boolean | undefined,
+  currentMemberId: string,
+  participants: Array<{ memberId: string; alias: string }> | undefined,
+  fallbackAlias: string
+): string | undefined {
+  if (!isGroup) return fallbackAlias;
+  const alias = participants?.find((participant) => participant.memberId === currentMemberId)?.alias;
+  if (!alias || alias === "You" || isGeneratedAlias(alias)) return undefined;
+  return alias;
+}
+
+export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
   const roomId = useSocialStore((s) => s.selectedContactId);
   const _hydrated = useSocialStore((s) => s._hydrated);
@@ -97,9 +152,11 @@ export default function ChatPage() {
 
   const contacts = useSocialStore((s) => s.contacts);
   const addMessage = useSocialStore((s) => s.addMessage);
+  const addContact = useSocialStore((s) => s.addContact);
   const replaceMessages = useSocialStore((s) => s.replaceMessages);
   const setMessageStatus = useSocialStore((s) => s.setMessageStatus);
   const removeContact = useSocialStore((s) => s.removeContact);
+  const activatePendingContact = useSocialStore((s) => s.activatePendingContact);
   const setSelectedContactId = useSocialStore((s) => s.setSelectedContactId);
   const removeMessage = useSocialStore((s) => s.removeMessage);
   const incrementUnread = useSocialStore((s) => s.incrementUnread);
@@ -232,6 +289,14 @@ export default function ChatPage() {
         conversationKeyForEffect,
         Array.from(mergedById.values()).sort((a, b) => a.timestamp - b.timestamp)
       );
+
+      if (contact?.isGroup) {
+        history.messages.forEach((message) => {
+          if (message.senderMemberId && message.senderAlias && !isGeneratedAlias(message.senderAlias)) {
+            upsertParticipant(roomIdForEffect, message.senderMemberId, message.senderAlias);
+          }
+        });
+      }
     })();
 
     return () => {
@@ -317,6 +382,26 @@ export default function ChatPage() {
     [contactConversationKey, replaceMessages, contact]
   );
 
+  const updateGroupInviteStatusLocally = useCallback(
+    (messageId: string, status: "accepted" | "declined") => {
+      if (!contactConversationKey) return;
+      const updated = messagesRef.current.map((message) => {
+        if (message.id !== messageId || message.kind !== "group_invite" || !message.groupInvite) {
+          return message;
+        }
+        return {
+          ...message,
+          groupInvite: {
+            ...message.groupInvite,
+            status,
+          },
+        };
+      });
+      replaceMessages(contactConversationKey, updated);
+    },
+    [contactConversationKey, replaceMessages]
+  );
+
   useEffect(() => {
     if (!contactRoomId) {
       setRelayToken(null);
@@ -356,7 +441,7 @@ export default function ChatPage() {
             const parsed = JSON.parse(decrypted) as EncryptedPayload;
             payload = parsed;
           } catch {
-            payload = { type: "chat", messageId: "msg_" + Date.now(), text: decrypted, senderAlias: "Unknown" };
+            payload = { type: "chat", messageId: createMessageId(), text: decrypted, senderAlias: "Unknown" };
           }
 
           if (payload.type === "contact_removed" && payload.roomId === roomIdForEffect) {
@@ -388,6 +473,120 @@ export default function ChatPage() {
               payload.senderMemberId,
               payload.senderAlias,
               payload.action
+            );
+            return;
+          }
+
+          if (payload.type === "group_invite") {
+            const isOwnInvite = Boolean(payload.senderMemberId && payload.senderMemberId === currentMemberId);
+            addMessage(
+              {
+                id: payload.messageId,
+                content: `Group invite: ${payload.groupName}`,
+                conversationKey: conversationKeyForEffect,
+                timestamp: Date.now(),
+                isOwn: isOwnInvite,
+                senderMemberId: payload.senderMemberId,
+                kind: "group_invite",
+                groupInvite: {
+                  groupRoomId: payload.groupRoomId,
+                  groupName: payload.groupName,
+                  groupConversationKey: payload.groupConversationKey,
+                  assignedAlias: payload.assignedAlias,
+                  inviterMemberId: payload.inviterMemberId,
+                  inviterRoomId: payload.inviterRoomId,
+                  inviteMessageId: payload.messageId,
+                  status: "pending",
+                },
+              },
+              conversationKeyForEffect
+            );
+            if (!isOwnInvite) {
+              incrementUnread(roomIdForEffect);
+            }
+            return;
+          }
+
+          if (payload.type === "group_invite_response") {
+            const isOwnResponse = Boolean(payload.senderMemberId && payload.senderMemberId === currentMemberId);
+            updateGroupInviteStatusLocally(payload.inviteMessageId, payload.response);
+            const originalInviteMessage = messagesRef.current.find(
+              (message) =>
+                message.id === payload.inviteMessageId &&
+                message.kind === "group_invite" &&
+                message.groupInvite?.groupRoomId === payload.groupRoomId
+            );
+
+            if (
+              payload.response === "accepted" &&
+              payload.groupMemberId &&
+              originalInviteMessage?.groupInvite?.assignedAlias
+            ) {
+              upsertParticipant(
+                payload.groupRoomId,
+                payload.groupMemberId,
+                originalInviteMessage.groupInvite.assignedAlias
+              );
+
+              const socialId = socialIdRef.current;
+              if (socialId) {
+                const updatedGroupContact = useSocialStore
+                  .getState()
+                  .contacts.find((entry) => entry.roomId === payload.groupRoomId);
+                if (updatedGroupContact) {
+                  void saveContactToDB(socialId, updatedGroupContact);
+                }
+              }
+            }
+
+            addMessage(
+              {
+                id: payload.messageId,
+                content:
+                  payload.response === "accepted"
+                    ? `${contact?.nickname || "Contact"} joined ${payload.groupName}`
+                    : `${contact?.nickname || "Contact"} declined ${payload.groupName}`,
+                conversationKey: conversationKeyForEffect,
+                timestamp: Date.now(),
+                isOwn: isOwnResponse,
+                senderMemberId: payload.senderMemberId,
+                kind: "system",
+                systemType:
+                  payload.response === "accepted"
+                    ? "group_invite_accepted"
+                    : "group_invite_declined",
+                systemText:
+                  payload.response === "accepted"
+                    ? `${contact?.nickname || "Contact"} joined ${payload.groupName}`
+                    : `${contact?.nickname || "Contact"} declined ${payload.groupName}`,
+              },
+              conversationKeyForEffect
+            );
+            return;
+          }
+
+          if (payload.type === "group_member_joined") {
+            if (payload.senderMemberId) {
+              upsertParticipant(
+                roomIdForEffect,
+                payload.senderMemberId,
+                payload.memberAlias || defaultAliasForMember(payload.senderMemberId)
+              );
+            }
+            addMessage(
+              {
+                id: payload.messageId,
+                content: `${payload.memberAlias} joined ${payload.groupName}`,
+                conversationKey: conversationKeyForEffect,
+                timestamp: Date.now(),
+                isOwn: Boolean(payload.senderMemberId && payload.senderMemberId === currentMemberId),
+                senderMemberId: payload.senderMemberId,
+                senderAlias: payload.memberAlias,
+                kind: "system",
+                systemType: "group_member_joined",
+                systemText: `${payload.memberAlias} joined ${payload.groupName}`,
+              },
+              conversationKeyForEffect
             );
             return;
           }
@@ -432,11 +631,11 @@ export default function ChatPage() {
                   replyToSenderAlias: payload.replyToSenderAlias,
                 };
 
-          if (contact?.isGroup && payload.senderMemberId) {
+          if (contact?.isGroup && payload.senderMemberId && payload.senderAlias) {
             upsertParticipant(
               roomIdForEffect,
               payload.senderMemberId,
-              payload.senderAlias || defaultAliasForMember(payload.senderMemberId)
+              payload.senderAlias
             );
           }
           addMessage(incoming, conversationKeyForEffect);
@@ -474,6 +673,7 @@ export default function ChatPage() {
     markContactOpened,
     upsertParticipant,
     applyReactionLocally,
+    updateGroupInviteStatusLocally,
     removeContact,
     removeMessage,
     roomId,
@@ -628,8 +828,14 @@ export default function ChatPage() {
     if (!contact || !message.trim()) return;
     setError("");
 
-    const id = "msg_" + Date.now();
+    const id = createMessageId();
     const selfAlias = defaultAliasForMember(currentMemberId || undefined);
+    const outgoingSenderAlias = resolveOutgoingSenderAlias(
+      contact.isGroup,
+      currentMemberId,
+      contact.participants,
+      selfAlias
+    );
     const replyToMessageId = replyTarget?.id;
     const replyToContent = replyTarget ? summarizeMessageForReply(replyTarget) : undefined;
     const replyToSenderAlias = replyTarget
@@ -644,7 +850,7 @@ export default function ChatPage() {
       timestamp: Date.now(),
       isOwn: true,
       senderMemberId: currentMemberId || undefined,
-      senderAlias: selfAlias,
+      senderAlias: outgoingSenderAlias,
       status: "sending",
       kind: "text",
       replyToMessageId,
@@ -663,7 +869,7 @@ export default function ChatPage() {
         messageId: id,
         text: message,
         senderMemberId: currentMemberId || undefined,
-        senderAlias: selfAlias,
+        senderAlias: outgoingSenderAlias,
         replyToMessageId,
         replyToContent,
         replyToSenderAlias,
@@ -698,7 +904,7 @@ export default function ChatPage() {
           messageId: id,
           text: message,
           senderMemberId: currentMemberId || undefined,
-          senderAlias: selfAlias,
+          senderAlias: outgoingSenderAlias,
           replyToMessageId,
           replyToContent,
           replyToSenderAlias,
@@ -714,8 +920,14 @@ export default function ChatPage() {
   const sendAttachment = useCallback(
     async (file: File) => {
       if (!contact || !socialId) return;
-      const id = "msg_" + Date.now();
+      const id = createMessageId();
       const selfAlias = defaultAliasForMember(currentMemberId || undefined);
+      const outgoingSenderAlias = resolveOutgoingSenderAlias(
+        contact.isGroup,
+        currentMemberId,
+        contact.participants,
+        selfAlias
+      );
       const replyToMessageId = replyTarget?.id;
       const replyToContent = replyTarget ? summarizeMessageForReply(replyTarget) : undefined;
       const replyToSenderAlias = replyTarget
@@ -745,7 +957,7 @@ export default function ChatPage() {
         timestamp: Date.now(),
         isOwn: true,
         senderMemberId: currentMemberId || undefined,
-        senderAlias: selfAlias,
+        senderAlias: outgoingSenderAlias,
         status: "sending",
         kind: "file",
         fileName: file.name,
@@ -773,7 +985,7 @@ export default function ChatPage() {
           wrappedFileKeyVersion: encryptedAttachment.wrappedFileKeyVersion,
           attachmentSize: encryptedAttachment.plaintextByteLength,
           senderMemberId: currentMemberId || undefined,
-          senderAlias: selfAlias,
+          senderAlias: outgoingSenderAlias,
           replyToMessageId,
           replyToContent,
           replyToSenderAlias,
@@ -802,7 +1014,7 @@ export default function ChatPage() {
             wrappedFileKeyVersion: encryptedAttachment.wrappedFileKeyVersion,
             attachmentSize: encryptedAttachment.plaintextByteLength,
             senderMemberId: currentMemberId || undefined,
-            senderAlias: selfAlias,
+            senderAlias: outgoingSenderAlias,
             replyToMessageId,
             replyToContent,
             replyToSenderAlias,
@@ -862,6 +1074,120 @@ export default function ChatPage() {
     [contact, currentMemberId, applyReactionLocally, sendEncryptedPayload]
   );
 
+  const respondToGroupInvite = useCallback(
+    async (message: ChatMessage, response: "accepted" | "declined") => {
+      if (!contact || message.kind !== "group_invite" || !message.groupInvite) return;
+      const socialId = socialIdRef.current;
+      if (!socialId) return;
+
+      updateGroupInviteStatusLocally(message.id, response);
+
+      const updatedInviteMessage: ChatMessage = {
+        ...message,
+        groupInvite: {
+          ...message.groupInvite,
+          status: response,
+        },
+      };
+
+      await saveMessageToDB({
+        senderSocialId: socialId,
+        roomId: contact.roomId,
+        message: updatedInviteMessage,
+      });
+
+      let groupMemberId: string | undefined;
+
+      if (response === "accepted") {
+        addContact(
+          message.groupInvite.groupName,
+          message.groupInvite.groupConversationKey,
+          message.groupInvite.groupRoomId,
+          {
+            isGroup: true,
+            groupName: message.groupInvite.groupName,
+            participantLimit: undefined,
+            participants: [],
+          }
+        );
+        activatePendingContact(message.groupInvite.groupRoomId);
+
+        const joined = await joinRoomMembership(socialId, message.groupInvite.groupRoomId);
+        if (!joined.success || !joined.memberId) {
+          throw new Error(joined.error || "Unable to join group");
+        }
+        groupMemberId = joined.memberId;
+
+        if (message.groupInvite.inviterMemberId) {
+          upsertParticipant(message.groupInvite.groupRoomId, message.groupInvite.inviterMemberId, contact.nickname);
+        }
+        upsertParticipant(message.groupInvite.groupRoomId, groupMemberId, message.groupInvite.assignedAlias);
+
+        const joinedMessage: ChatMessage = {
+          id: createMessageId(),
+          content: `${message.groupInvite.assignedAlias} joined ${message.groupInvite.groupName}`,
+          conversationKey: message.groupInvite.groupConversationKey,
+          timestamp: Date.now(),
+          isOwn: true,
+          senderMemberId: groupMemberId,
+          senderAlias: message.groupInvite.assignedAlias,
+          kind: "system",
+          systemType: "group_member_joined",
+          systemText: `${message.groupInvite.assignedAlias} joined ${message.groupInvite.groupName}`,
+          status: "sent",
+        };
+
+        addMessage(joinedMessage, message.groupInvite.groupConversationKey);
+        await saveMessageToDB({
+          senderSocialId: socialId,
+          roomId: message.groupInvite.groupRoomId,
+          message: joinedMessage,
+        });
+        await sendEncryptedRoomPayload({
+          roomId: message.groupInvite.groupRoomId,
+          conversationKey: message.groupInvite.groupConversationKey,
+          socialId,
+          payload: {
+            type: "group_member_joined",
+            messageId: joinedMessage.id,
+            groupRoomId: message.groupInvite.groupRoomId,
+            groupName: message.groupInvite.groupName,
+            memberAlias: message.groupInvite.assignedAlias,
+            senderMemberId: groupMemberId,
+          },
+        });
+
+        const newGroupContact = useSocialStore.getState().contacts.find(
+          (entry) => entry.roomId === message.groupInvite?.groupRoomId
+        );
+        if (newGroupContact) {
+          await saveContactToDB(socialId, newGroupContact);
+        }
+      }
+
+      await sendEncryptedPayload({
+        type: "group_invite_response",
+        messageId: createMessageId(),
+        inviteMessageId: message.groupInvite.inviteMessageId || message.id,
+        groupRoomId: message.groupInvite.groupRoomId,
+        groupName: message.groupInvite.groupName,
+        response,
+        groupMemberId,
+        senderMemberId: currentMemberId || undefined,
+      });
+    },
+    [
+      contact,
+      addContact,
+      activatePendingContact,
+      addMessage,
+      currentMemberId,
+      sendEncryptedPayload,
+      updateGroupInviteStatusLocally,
+      upsertParticipant,
+    ]
+  );
+
   const removeContactEverywhere = useCallback(async () => {
     if (!contact) return;
     if (!window.confirm(`Remove ${contact.nickname}? This will delete this conversation for everyone in this room.`)) return;
@@ -891,7 +1217,7 @@ export default function ChatPage() {
 
   if (!contact) {
     return (
-      <div className="h-screen flex items-center justify-center bg-[var(--color-bg)]">
+      <div className={`${embedded ? "h-full" : "h-screen"} flex items-center justify-center bg-[var(--color-bg)]`}>
         <div className="text-[var(--color-fg-muted)]">No conversation selected</div>
       </div>
     );
@@ -901,15 +1227,17 @@ export default function ChatPage() {
   const senderAliasByMemberId = new Map((contact.participants ?? []).map((p) => [p.memberId, p.alias]));
 
   return (
-    <div className="h-screen flex flex-col bg-[var(--color-bg)]">
+    <div className={`${embedded ? "h-full min-h-0" : "h-screen"} flex flex-col bg-[var(--color-bg)]`}>
       <div className="px-6 py-4 border-b border-[var(--color-border)] bg-[var(--color-bg)] flex items-center gap-4">
-        <button
-          onClick={() => router.back()}
-          className="p-2 hover:bg-[var(--color-bg-secondary)] rounded-lg transition-colors"
-          aria-label="Go back"
-        >
-          <ArrowLeft size={20} className="text-[var(--color-fg-muted)]" />
-        </button>
+        {!embedded ? (
+          <button
+            onClick={() => router.back()}
+            className="p-2 hover:bg-[var(--color-bg-secondary)] rounded-lg transition-colors"
+            aria-label="Go back"
+          >
+            <ArrowLeft size={20} className="text-[var(--color-fg-muted)]" />
+          </button>
+        ) : null}
 
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-none bg-[var(--color-border-strong)] flex items-center justify-center">
@@ -920,7 +1248,11 @@ export default function ChatPage() {
             <p className="text-sm text-[var(--color-fg-muted)]">
               {contact.isGroup
                 ? `Secure group chat • ${Math.max(1, contact.participants?.length ?? 0)} member(s)`
-                : "Secure chat"}
+                : contact.status === "pending"
+                  ? "Invite pending"
+                  : contact.isOnline
+                    ? "Online"
+                    : "Offline"}
             </p>
           </div>
         </div>
@@ -959,9 +1291,13 @@ export default function ChatPage() {
         ) : (
           <div className="space-y-4">
             {messages.map((m) => {
+              const participantAlias = m.senderMemberId
+                ? senderAliasByMemberId.get(m.senderMemberId)
+                : undefined;
               const senderName =
-                m.senderAlias ||
-                (m.senderMemberId ? senderAliasByMemberId.get(m.senderMemberId) : undefined) ||
+                (contact.isGroup ? participantAlias : undefined) ||
+                (!isGeneratedAlias(m.senderAlias) ? m.senderAlias : undefined) ||
+                participantAlias ||
                 "Unknown";
               const reactionGroups = (m.reactions ?? []).reduce<Record<string, { count: number; mine: boolean }>>(
                 (acc, reaction) => {
@@ -981,27 +1317,63 @@ export default function ChatPage() {
                   key={m.id}
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className={m.isOwn ? "flex justify-end" : "flex justify-start"}
+                  className={
+                    m.kind === "system"
+                      ? "flex justify-center"
+                      : m.isOwn
+                        ? "flex justify-end"
+                        : "flex justify-start"
+                  }
                 >
                   <div
                     className={
-                      m.isOwn
+                      m.kind === "system"
+                        ? "bg-[var(--color-bg-secondary)] text-[var(--color-fg-muted)] px-4 py-2 rounded-none max-w-md border border-[var(--color-border)] text-center"
+                        : m.isOwn
                         ? "bg-[var(--color-interactive-inverse)] text-[var(--color-fg-primary)] px-4 py-2 rounded-none max-w-xs border border-[var(--color-border)]"
                         : "bg-[var(--color-bg-secondary)] text-[var(--color-fg-primary)] px-4 py-2 rounded-none max-w-xs border border-[var(--color-border)]"
                     }
                   >
-                    {!m.isOwn && contact.isGroup ? (
+                    {!m.isOwn && contact.isGroup && m.kind !== "system" ? (
                       <div className="mb-1 text-[10px] uppercase tracking-wide opacity-70">{senderName}</div>
                     ) : null}
 
                     {m.replyToMessageId ? (
                       <div className="mb-2 border-l-2 border-[var(--color-fg-muted)] pl-2 text-xs opacity-80">
-                        <div className="uppercase tracking-wide">{m.replyToSenderAlias || "Message"}</div>
                         <div className="truncate">{m.replyToContent || "Reply"}</div>
                       </div>
                     ) : null}
 
-                    {m.kind === "file" && m.fileDataBase64 ? (
+                    {m.kind === "group_invite" && m.groupInvite ? (
+                      <div className="space-y-3">
+                        <div className="text-sm font-semibold">Group invite</div>
+                        <div className="text-xs opacity-80">{m.groupInvite.groupName}</div>
+                        <div className="text-xs opacity-70">
+                          Your group name will be {m.groupInvite.assignedAlias}.
+                        </div>
+                        <div className="text-xs opacity-70">
+                          Status: {m.groupInvite.status || "pending"}
+                        </div>
+                        {!m.isOwn && (m.groupInvite.status ?? "pending") === "pending" ? (
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void respondToGroupInvite(m, "accepted")}
+                              className="flex-1 border border-[var(--color-border)] px-3 py-2 text-xs"
+                            >
+                              Accept
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void respondToGroupInvite(m, "declined")}
+                              className="flex-1 border border-[var(--color-border)] px-3 py-2 text-xs"
+                            >
+                              Decline
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : m.kind === "file" && m.fileDataBase64 ? (
                       <div className="space-y-2">
                         {m.mimeType?.startsWith("image/") ? (
                           <Image
@@ -1032,11 +1404,13 @@ export default function ChatPage() {
                           Decrypt and download
                         </button>
                       </div>
+                    ) : m.kind === "system" ? (
+                      <div className="text-sm">{m.systemText || m.content}</div>
                     ) : (
                       <div>{m.content}</div>
                     )}
 
-                    {Object.keys(reactionGroups).length > 0 ? (
+                    {m.kind !== "system" && m.kind !== "group_invite" && Object.keys(reactionGroups).length > 0 ? (
                       <div className="mt-2 flex flex-wrap gap-1">
                         {Object.entries(reactionGroups).map(([emoji, group]) => (
                           <button
@@ -1053,27 +1427,29 @@ export default function ChatPage() {
 
                     <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
                       <div className="text-[10px] opacity-70">{formatMessageTime(m.timestamp)}</div>
-                      <div className="flex items-center gap-2 text-xs opacity-80">
-                        <button onClick={() => setReplyTarget(m)} className="hover:opacity-100" title="Reply">
-                          Reply
-                        </button>
-                        <button onClick={() => void reactToMessage(m, "👍")} className="hover:opacity-100" title="React">
-                          👍
-                        </button>
-                        <button onClick={() => void reactToMessage(m, "❤️")} className="hover:opacity-100" title="React">
-                          ❤️
-                        </button>
-                        <button onClick={() => void reactToMessage(m, "😂")} className="hover:opacity-100" title="React">
-                          😂
-                        </button>
-                        <button
-                          onClick={() => void deleteMessageEverywhere(m.id)}
-                          className="hover:opacity-100"
-                          title="Delete for everyone"
-                        >
-                          Delete
-                        </button>
-                      </div>
+                      {m.kind !== "system" && m.kind !== "group_invite" ? (
+                        <div className="flex items-center gap-2 text-xs opacity-80">
+                          <button onClick={() => setReplyTarget(m)} className="hover:opacity-100" title="Reply">
+                            Reply
+                          </button>
+                          <button onClick={() => void reactToMessage(m, "👍")} className="hover:opacity-100" title="React">
+                            👍
+                          </button>
+                          <button onClick={() => void reactToMessage(m, "❤️")} className="hover:opacity-100" title="React">
+                            ❤️
+                          </button>
+                          <button onClick={() => void reactToMessage(m, "😂")} className="hover:opacity-100" title="React">
+                            😂
+                          </button>
+                          <button
+                            onClick={() => void deleteMessageEverywhere(m.id)}
+                            className="hover:opacity-100"
+                            title="Delete for everyone"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                     {m.isOwn && m.status && m.status !== "sent" ? (
                       <div className="text-[10px] opacity-70 mt-1">{m.status}</div>
@@ -1091,9 +1467,7 @@ export default function ChatPage() {
           <div className="mb-3 border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-2 text-xs">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <div className="uppercase tracking-wide opacity-70">
-                  Replying to {replyTarget.isOwn ? "you" : replyTarget.senderAlias || "contact"}
-                </div>
+                <div className="uppercase tracking-wide opacity-70">Reply</div>
                 <div className="truncate">{summarizeMessageForReply(replyTarget)}</div>
               </div>
               <button
@@ -1144,4 +1518,8 @@ export default function ChatPage() {
       </div>
     </div>
   );
+}
+
+export default function ChatPage() {
+  return <ChatPanel />;
 }

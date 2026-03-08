@@ -82,7 +82,6 @@ export async function POST(req: NextRequest) {
       { roomId, messageId },
       {
         $set: {
-          senderId,
           roomId,
           messageId,
           encryptedContent,
@@ -90,6 +89,7 @@ export async function POST(req: NextRequest) {
           updatedAt: now,
         },
         $setOnInsert: {
+          senderId,
           createdAt: now,
         },
       },
