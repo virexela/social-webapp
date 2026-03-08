@@ -29,11 +29,17 @@ class MockWebSocket {
     this.readyState = MockWebSocket.OPEN;
     this.onopen?.({} as Event);
   }
+
+  emitClose() {
+    this.readyState = MockWebSocket.CLOSED;
+    this.onclose?.({} as CloseEvent);
+  }
 }
 
 describe("RelaySocket", () => {
   beforeEach(() => {
     MockWebSocket.instances = [];
+    jest.useFakeTimers();
     Object.defineProperty(globalThis, "window", {
       value: globalThis,
       configurable: true,
@@ -44,6 +50,10 @@ describe("RelaySocket", () => {
       configurable: true,
       writable: true,
     });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   it("defers close until after a connecting socket opens", () => {
@@ -62,5 +72,22 @@ describe("RelaySocket", () => {
     rawSocket?.emitOpen();
 
     expect(rawSocket?.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("backs off reconnect attempts after handshake failures", () => {
+    const socket = new RelaySocket("ws://localhost:8080/ws/room-1");
+
+    socket.connect();
+
+    const firstSocket = MockWebSocket.instances[0];
+    expect(firstSocket).toBeDefined();
+
+    firstSocket?.emitClose();
+
+    jest.advanceTimersByTime(4_999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    jest.advanceTimersByTime(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
   });
 });

@@ -274,6 +274,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
   const relayTokenRef = useRef<string | null>(null);
   const contactRoomIdRef = useRef(contactRoomId);
   const contactConversationKeyRef = useRef(contactConversationKey);
+  const currentMemberIdRef = useRef(currentMemberId);
   const retryInFlightRef = useRef(false);
 
   useEffect(() => {
@@ -291,6 +292,10 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
   useEffect(() => {
     relayTokenRef.current = relayToken;
   }, [relayToken]);
+
+  useEffect(() => {
+    currentMemberIdRef.current = currentMemberId;
+  }, [currentMemberId]);
 
   useEffect(() => {
     contactRoomIdRef.current = contactRoomId;
@@ -666,7 +671,8 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
           }
 
           if (payload.type === "group_invite") {
-            const isOwnInvite = Boolean(payload.senderMemberId && payload.senderMemberId === currentMemberId);
+            const activeMemberId = currentMemberIdRef.current;
+            const isOwnInvite = Boolean(payload.senderMemberId && payload.senderMemberId === activeMemberId);
             addMessage(
               {
                 id: payload.messageId,
@@ -696,7 +702,9 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
           }
 
           if (payload.type === "group_invite_response") {
-            const isOwnResponse = Boolean(payload.senderMemberId && payload.senderMemberId === currentMemberId);
+            const activeMemberId = currentMemberIdRef.current;
+            const activeContact = contactRef.current;
+            const isOwnResponse = Boolean(payload.senderMemberId && payload.senderMemberId === activeMemberId);
             updateGroupInviteStatusLocally(payload.inviteMessageId, payload.response);
             const originalInviteMessage = messagesRef.current.find(
               (message) =>
@@ -732,8 +740,8 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
                 id: payload.messageId,
                 content:
                   payload.response === "accepted"
-                    ? `${contact?.nickname || "Contact"} joined ${payload.groupName}`
-                    : `${contact?.nickname || "Contact"} declined ${payload.groupName}`,
+                    ? `${activeContact?.nickname || "Contact"} joined ${payload.groupName}`
+                    : `${activeContact?.nickname || "Contact"} declined ${payload.groupName}`,
                 conversationKey: conversationKeyForEffect,
                 timestamp: Date.now(),
                 isOwn: isOwnResponse,
@@ -745,8 +753,8 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
                     : "group_invite_declined",
                 systemText:
                   payload.response === "accepted"
-                    ? `${contact?.nickname || "Contact"} joined ${payload.groupName}`
-                    : `${contact?.nickname || "Contact"} declined ${payload.groupName}`,
+                    ? `${activeContact?.nickname || "Contact"} joined ${payload.groupName}`
+                    : `${activeContact?.nickname || "Contact"} declined ${payload.groupName}`,
               },
               conversationKeyForEffect
             );
@@ -767,7 +775,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
                 content: `${payload.memberAlias} joined ${payload.groupName}`,
                 conversationKey: conversationKeyForEffect,
                 timestamp: Date.now(),
-                isOwn: Boolean(payload.senderMemberId && payload.senderMemberId === currentMemberId),
+                isOwn: Boolean(payload.senderMemberId && payload.senderMemberId === currentMemberIdRef.current),
                 senderMemberId: payload.senderMemberId,
                 senderAlias: payload.memberAlias,
                 kind: "system",
@@ -790,7 +798,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
                   content: payload.fileName,
                   conversationKey: conversationKeyForEffect,
                   timestamp: Date.now(),
-                  isOwn: Boolean(payload.senderMemberId && payload.senderMemberId === currentMemberId),
+                  isOwn: Boolean(payload.senderMemberId && payload.senderMemberId === currentMemberIdRef.current),
                   senderMemberId: payload.senderMemberId,
                   senderAlias: payload.senderAlias,
                   kind: "file",
@@ -810,7 +818,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
                   content: payload.text,
                   conversationKey: conversationKeyForEffect,
                   timestamp: Date.now(),
-                  isOwn: Boolean(payload.senderMemberId && payload.senderMemberId === currentMemberId),
+                  isOwn: Boolean(payload.senderMemberId && payload.senderMemberId === currentMemberIdRef.current),
                   senderMemberId: payload.senderMemberId,
                   senderAlias: payload.senderAlias,
                   kind: "text",
@@ -819,7 +827,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
                   replyToSenderAlias: payload.replyToSenderAlias,
                 };
 
-          if (contact?.isGroup && payload.senderMemberId && payload.senderAlias) {
+          if (contactRef.current?.isGroup && payload.senderMemberId && payload.senderAlias) {
             upsertParticipant(
               roomIdForEffect,
               payload.senderMemberId,
@@ -854,8 +862,6 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
     contactRoomId,
     contactConversationKey,
     relayToken,
-    currentMemberId,
-    contact?.isGroup,
     addMessage,
     incrementUnread,
     markContactOpened,

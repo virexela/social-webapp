@@ -15,6 +15,7 @@ export class RelaySocket {
   private openWaiters: OpenWaiter[] = [];
   private msgListeners: Array<(msg: unknown) => void> = [];
   private urlIndex = 0;
+  private hasOpened = false;
   private readonly urls: string[];
 
   constructor(
@@ -79,6 +80,7 @@ export class RelaySocket {
       }
 
       this.state = "open";
+      this.hasOpened = true;
       this.reconnectAttempt = 0;
       const waiters = this.openWaiters;
       this.openWaiters = [];
@@ -102,6 +104,8 @@ export class RelaySocket {
     };
 
     socket.onclose = () => {
+      const closedWhileConnecting = this.state === "connecting";
+
       if (this.pendingCloseSocket === socket) {
         this.pendingCloseSocket = null;
       }
@@ -117,7 +121,7 @@ export class RelaySocket {
         for (const w of waiters) w.resolve();
       }
       if (this.allowReconnect) {
-        this.scheduleReconnect();
+        this.scheduleReconnect(closedWhileConnecting);
       }
     };
 
@@ -180,10 +184,15 @@ export class RelaySocket {
   }
 
   private scheduleReconnect() {
+    this.scheduleReconnect(false);
+  }
+
+  private scheduleReconnect(closedWhileConnecting: boolean) {
     if (!this.allowReconnect) return;
     if (this.reconnectTimer) return;
     const attempt = this.reconnectAttempt++;
-    const delayMs = Math.min(30_000, 250 * 2 ** attempt);
+    const baseDelayMs = closedWhileConnecting || !this.hasOpened ? 5_000 : 1_000;
+    const delayMs = Math.min(60_000, baseDelayMs * 2 ** attempt);
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       if (this.urls.length > 1) {
