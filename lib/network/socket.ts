@@ -11,6 +11,7 @@ export class RelaySocket {
   private reconnectAttempt = 0;
   private reconnectTimer: number | null = null;
   private allowReconnect = true;
+  private pendingCloseSocket: WebSocket | null = null;
   private openWaiters: OpenWaiter[] = [];
   private msgListeners: Array<(msg: unknown) => void> = [];
   private urlIndex = 0;
@@ -35,6 +36,25 @@ export class RelaySocket {
     this.openWaiters = this.openWaiters.filter((w) => w !== waiter);
   }
 
+  private closeSocketWhenSafe(socket: WebSocket | null) {
+    if (!socket) return;
+
+    // Closing while CONNECTING triggers a browser console warning even though
+    // the socket lifecycle is otherwise fine, so defer the close until open.
+    if (socket.readyState === WebSocket.CONNECTING) {
+      this.pendingCloseSocket = socket;
+      return;
+    }
+
+    if (this.ws === socket) {
+      this.ws = null;
+    }
+
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.close();
+    }
+  }
+
   connect() {
     if (this.state === "open" || this.state === "connecting") return;
     this.allowReconnect = true;
@@ -46,9 +66,18 @@ export class RelaySocket {
       return;
     }
 
-    this.ws = new WebSocket(targetUrl);
+    const socket = new WebSocket(targetUrl);
+    this.ws = socket;
 
-    this.ws.onopen = () => {
+    socket.onopen = () => {
+      if (this.pendingCloseSocket === socket || this.ws !== socket) {
+        if (this.pendingCloseSocket === socket) {
+          this.pendingCloseSocket = null;
+        }
+        socket.close();
+        return;
+      }
+
       this.state = "open";
       this.reconnectAttempt = 0;
       const waiters = this.openWaiters;
@@ -56,7 +85,11 @@ export class RelaySocket {
       for (const w of waiters) w.resolve();
     };
 
-    this.ws.onmessage = (evt) => {
+    socket.onmessage = (evt) => {
+      if (this.ws !== socket || this.pendingCloseSocket === socket) {
+        return;
+      }
+
       let payload: unknown = evt.data;
       if (typeof evt.data === "string") {
         try {
@@ -68,7 +101,15 @@ export class RelaySocket {
       for (const l of this.msgListeners) l(payload);
     };
 
-    this.ws.onclose = () => {
+    socket.onclose = () => {
+      if (this.pendingCloseSocket === socket) {
+        this.pendingCloseSocket = null;
+      }
+      if (this.ws !== socket) {
+        return;
+      }
+
+      this.ws = null;
       this.state = "closed";
       if (!this.allowReconnect && this.openWaiters.length > 0) {
         const waiters = this.openWaiters;
@@ -80,7 +121,7 @@ export class RelaySocket {
       }
     };
 
-    this.ws.onerror = () => {
+    socket.onerror = () => {
       // Safari may emit transient error events; rely on onclose for reconnect.
     };
   }
@@ -109,8 +150,7 @@ export class RelaySocket {
           this.reconnectTimer = null;
         }
         this.state = "closed";
-        this.ws?.close();
-        this.ws = null;
+        this.closeSocketWhenSafe(this.ws);
         reject(new Error("WebSocket open timed out"));
       }, timeoutMs);
 
@@ -136,8 +176,7 @@ export class RelaySocket {
       for (const w of waiters) w.resolve();
     }
     this.state = "closed";
-    this.ws?.close();
-    this.ws = null;
+    this.closeSocketWhenSafe(this.ws);
   }
 
   private scheduleReconnect() {
