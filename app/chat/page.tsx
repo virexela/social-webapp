@@ -225,10 +225,33 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
   const [attachmentObjectUrls, setAttachmentObjectUrls] = useState<Record<string, string>>({});
   const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
+  const contactRef = useRef(contact);
+  const roomIdRef = useRef(roomId);
+  const relayTokenRef = useRef<string | null>(null);
+  const contactRoomIdRef = useRef(contactRoomId);
+  const contactConversationKeyRef = useRef(contactConversationKey);
+  const retryInFlightRef = useRef(false);
 
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    contactRef.current = contact;
+  }, [contact]);
+
+  useEffect(() => {
+    roomIdRef.current = roomId;
+  }, [roomId]);
+
+  useEffect(() => {
+    relayTokenRef.current = relayToken;
+  }, [relayToken]);
+
+  useEffect(() => {
+    contactRoomIdRef.current = contactRoomId;
+    contactConversationKeyRef.current = contactConversationKey;
+  }, [contactRoomId, contactConversationKey]);
 
   useEffect(() => {
     return () => {
@@ -829,12 +852,15 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
 
   const sendEncryptedPayload = useCallback(
     async (payload: EncryptedPayload) => {
-      if (!contact) return;
+      const activeContact = contactRef.current;
+      const activeRoomId = roomIdRef.current;
+      if (!activeContact || !activeRoomId) return;
 
-      let resolvedRelayToken = relayToken ?? undefined;
+      let resolvedRelayToken = relayTokenRef.current ?? undefined;
       if (RELAY_TOKEN_REQUIRED && !resolvedRelayToken) {
-        resolvedRelayToken = await fetchRelayJoinToken(contact.roomId, "chat", socialIdRef.current || undefined) ?? undefined;
+        resolvedRelayToken = await fetchRelayJoinToken(activeContact.roomId, "chat", socialIdRef.current || undefined) ?? undefined;
         if (resolvedRelayToken) {
+          relayTokenRef.current = resolvedRelayToken;
           setRelayToken(resolvedRelayToken);
         }
       }
@@ -845,19 +871,19 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
 
       let socket = socketRef.current;
       if (!socket) {
-        socket = new RelaySocket(buildRelayChatUrlCandidates(roomId!, resolvedRelayToken));
+        socket = new RelaySocket(buildRelayChatUrlCandidates(activeRoomId, resolvedRelayToken));
         socketRef.current = socket;
       }
 
       // Azure App Service can suspend websocket workers; allow extra wake-up time and one reconnect retry.
       await socket.connectAndWaitOpen(20_000);
 
-      const ciphertext = await encryptTransportMessage(JSON.stringify(payload), contact.conversationKey);
+      const ciphertext = await encryptTransportMessage(JSON.stringify(payload), activeContact.conversationKey);
       try {
         socket.sendJson({ ciphertext });
       } catch {
         socket.close();
-        const retrySocket = new RelaySocket(buildRelayChatUrlCandidates(roomId!, resolvedRelayToken));
+        const retrySocket = new RelaySocket(buildRelayChatUrlCandidates(activeRoomId, resolvedRelayToken));
         socketRef.current = retrySocket;
         await retrySocket.connectAndWaitOpen(20_000);
         retrySocket.sendJson({ ciphertext });
@@ -866,7 +892,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
       const socialId = socialIdRef.current;
       if (socialId && (payload.type === "chat" || payload.type === "file")) {
         void notifyRoomMessage(
-          contact.roomId,
+          activeContact.roomId,
           socialId,
           payload.messageId,
           payload.senderMemberId,
@@ -874,39 +900,48 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
         );
       }
     },
-    [contact, roomId, relayToken]
+    []
   );
 
   const retryQueuedOutgoing = useCallback(async () => {
-    if (!contactRoomId || !contactConversationKey) return;
+    const activeRoomId = contactRoomIdRef.current;
+    const activeConversationKey = contactConversationKeyRef.current;
+    if (!activeRoomId || !activeConversationKey) return;
     if (!navigator.onLine) return;
+    if (retryInFlightRef.current) return;
 
     const socialId = socialIdRef.current;
     if (!socialId) return;
 
-    const queued = getOutboxForRoom(contactRoomId);
+    const queued = getOutboxForRoom(activeRoomId);
     if (queued.length === 0) return;
 
-    for (const queuedItem of queued) {
-      setMessageStatus(contactConversationKey, queuedItem.message.id, "sending");
-      try {
-        await sendEncryptedPayload(queuedItem.payload);
-        const persisted = await saveMessageToDB({
-          senderSocialId: socialId,
-          roomId: contactRoomId,
-          message: { ...queuedItem.message, status: "sent" },
-        });
-        if (!persisted.success) {
-          throw new Error(persisted.error || "Failed to persist queued message");
+    retryInFlightRef.current = true;
+
+    try {
+      for (const queuedItem of queued) {
+        setMessageStatus(activeConversationKey, queuedItem.message.id, "sending");
+        try {
+          await sendEncryptedPayload(queuedItem.payload);
+          const persisted = await saveMessageToDB({
+            senderSocialId: socialId,
+            roomId: activeRoomId,
+            message: { ...queuedItem.message, status: "sent" },
+          });
+          if (!persisted.success) {
+            throw new Error(persisted.error || "Failed to persist queued message");
+          }
+          setMessageStatus(activeConversationKey, queuedItem.message.id, "sent");
+          dequeueOutboxItem(queuedItem.message.id);
+        } catch {
+          setMessageStatus(activeConversationKey, queuedItem.message.id, "failed");
+          break;
         }
-        setMessageStatus(contactConversationKey, queuedItem.message.id, "sent");
-        dequeueOutboxItem(queuedItem.message.id);
-      } catch {
-        setMessageStatus(contactConversationKey, queuedItem.message.id, "failed");
-        break;
       }
+    } finally {
+      retryInFlightRef.current = false;
     }
-  }, [contactConversationKey, contactRoomId, sendEncryptedPayload, setMessageStatus]);
+  }, [sendEncryptedPayload, setMessageStatus]);
 
   useEffect(() => {
     if (!contactRoomId) return;
