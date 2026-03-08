@@ -75,6 +75,7 @@ export async function POST(req: NextRequest) {
     }
 
     const memberOpaqueIds = members.map((m) => String(m.memberId ?? "")).filter(Boolean);
+    const notificationStateByOwner = new Map<string, { unreadCount: number; roomId: string }>();
     for (const ownerId of memberOpaqueIds) {
       const existing = await notificationsCol.findOne(
         { ownerId, roomId },
@@ -82,6 +83,7 @@ export async function POST(req: NextRequest) {
       );
       const previousUnread = Number(existing?.unreadCount ?? 0);
       const unreadCount = existing?.lastMessageId === messageId ? previousUnread : previousUnread + 1;
+      notificationStateByOwner.set(ownerId, { unreadCount, roomId });
       await notificationsCol.updateOne(
         { ownerId, roomId },
         {
@@ -125,10 +127,41 @@ export async function POST(req: NextRequest) {
           sub.endpointEnc as { v: 1; alg: "aes-256-gcm"; ivHex: string; ciphertextHex: string; tagHex: string } | null,
           String(sub.endpoint ?? "")
         ) ?? "";
-        if (!endpoint) continue;
+        const p256dh = decryptField(
+          sub.keysEnc?.p256dhEnc as { v: 1; alg: "aes-256-gcm"; ivHex: string; ciphertextHex: string; tagHex: string } | null,
+          String(sub.keys?.p256dh ?? "")
+        ) ?? "";
+        const auth = decryptField(
+          sub.keysEnc?.authEnc as { v: 1; alg: "aes-256-gcm"; ivHex: string; ciphertextHex: string; tagHex: string } | null,
+          String(sub.keys?.auth ?? "")
+        ) ?? "";
+        if (!endpoint || !p256dh || !auth) continue;
+
+        const ownerState = notificationStateByOwner.get(ownerId);
+        const payload = ownerState
+          ? {
+              kind: "room_message" as const,
+              roomId: ownerState.roomId,
+              unreadCount: ownerState.unreadCount,
+              lastMessageId: messageId,
+              latestSenderAlias: senderAlias || undefined,
+              title: "New messages",
+              body:
+                ownerState.unreadCount > 1
+                  ? `${ownerState.unreadCount} new messages`
+                  : "You have a new encrypted message.",
+              url: `/chat?roomId=${encodeURIComponent(ownerState.roomId)}`,
+            }
+          : undefined;
 
         try {
-          const result = await sendWebPush(endpoint);
+          const result = await sendWebPush(
+            {
+              endpoint,
+              keys: { p256dh, auth },
+            },
+            payload
+          );
           if (result.ok) {
             ownerDelivered = true;
             await subsCol.updateOne(

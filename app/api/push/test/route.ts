@@ -36,8 +36,27 @@ export async function POST(req: NextRequest) {
         sub.endpointEnc as { v: 1; alg: "aes-256-gcm"; ivHex: string; ciphertextHex: string; tagHex: string } | null,
         String(sub.endpoint ?? "")
       ) ?? "";
-      if (!endpoint) continue;
-      const result = await sendWebPush(endpoint);
+      const p256dh = decryptField(
+        sub.keysEnc?.p256dhEnc as { v: 1; alg: "aes-256-gcm"; ivHex: string; ciphertextHex: string; tagHex: string } | null,
+        String(sub.keys?.p256dh ?? "")
+      ) ?? "";
+      const auth = decryptField(
+        sub.keysEnc?.authEnc as { v: 1; alg: "aes-256-gcm"; ivHex: string; ciphertextHex: string; tagHex: string } | null,
+        String(sub.keys?.auth ?? "")
+      ) ?? "";
+      if (!endpoint || !p256dh || !auth) continue;
+      const result = await sendWebPush(
+        {
+          endpoint,
+          keys: { p256dh, auth },
+        },
+        {
+          kind: "test",
+          title: "Test notification",
+          body: "Push delivery is working for this device.",
+          url: "/settings",
+        }
+      );
       results.push({
         endpoint,
         ok: result.ok,

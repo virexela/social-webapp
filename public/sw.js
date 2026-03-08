@@ -7,6 +7,67 @@ let notificationsEnabled = true;
 const seenMessageIds = new Map();
 const MAX_SEEN_MESSAGE_IDS = 200;
 
+function normalizePushPayload(rawPayload) {
+  if (!rawPayload || typeof rawPayload !== "object") return null;
+
+  const roomId = typeof rawPayload.roomId === "string" ? rawPayload.roomId : "";
+  const unreadCount = Number(rawPayload.unreadCount ?? 0);
+  const lastMessageId = typeof rawPayload.lastMessageId === "string" ? rawPayload.lastMessageId : "";
+  const latestSenderAlias = typeof rawPayload.latestSenderAlias === "string" ? rawPayload.latestSenderAlias : "";
+  const title = typeof rawPayload.title === "string" && rawPayload.title ? rawPayload.title : "New messages";
+  const body = typeof rawPayload.body === "string" && rawPayload.body ? rawPayload.body : "You have a new encrypted message.";
+  const url = typeof rawPayload.url === "string" && rawPayload.url ? rawPayload.url : roomId ? `/chat?roomId=${encodeURIComponent(roomId)}` : "/";
+  const kind = typeof rawPayload.kind === "string" ? rawPayload.kind : "room_message";
+
+  return {
+    kind,
+    roomId,
+    unreadCount,
+    lastMessageId,
+    latestSenderAlias,
+    title,
+    body,
+    url,
+  };
+}
+
+function getPayloadFromPending(pending) {
+  if (!Array.isArray(pending) || pending.length === 0) {
+    return null;
+  }
+
+  const latest = pending[0];
+  const roomId = String(latest?.roomId ?? "");
+  const unreadCount = Number(latest?.unreadCount ?? 0);
+  if (!roomId || unreadCount <= 0) {
+    return null;
+  }
+
+  return {
+    kind: "room_message",
+    roomId,
+    unreadCount,
+    lastMessageId: String(latest?.lastMessageId ?? ""),
+    latestSenderAlias: String(latest?.latestSenderAlias ?? ""),
+    title: "New messages",
+    body: unreadCount > 1 ? `${unreadCount} new messages` : "You have a new encrypted message.",
+    url: `/chat?roomId=${encodeURIComponent(roomId)}`,
+  };
+}
+
+function parsePushEventPayload(event) {
+  if (!event.data) return null;
+  try {
+    return normalizePushPayload(event.data.json());
+  } catch {
+    try {
+      return normalizePushPayload(JSON.parse(event.data.text()));
+    } catch {
+      return null;
+    }
+  }
+}
+
 function rememberMessageId(messageId) {
   if (!messageId) return;
   seenMessageIds.set(messageId, Date.now());
@@ -26,6 +87,7 @@ async function trackMetric(kind, count = 1) {
     await fetch(`/api/push/metrics?kind=${encodeURIComponent(kind)}&count=${encodeURIComponent(String(count))}`, {
       method: "GET",
       cache: "no-store",
+      credentials: "include",
     });
   } catch {
     // best effort
@@ -33,7 +95,7 @@ async function trackMetric(kind, count = 1) {
 }
 
 async function getPendingNotifications() {
-  const response = await fetch("/api/push/pending", { method: "GET", cache: "no-store" });
+  const response = await fetch("/api/push/pending", { method: "GET", cache: "no-store", credentials: "include" });
   if (!response.ok) {
     throw new Error(`pending_fetch_failed_${response.status}`);
   }
@@ -121,6 +183,7 @@ self.addEventListener("message", (event) => {
 });
 
 self.addEventListener("push", (event) => {
+  const payloadFromEvent = parsePushEventPayload(event);
   event.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (clientList) => {
       let pending = [];
@@ -140,23 +203,30 @@ self.addEventListener("push", (event) => {
       }
 
       if (pending.length === 0) {
+        if (!payloadFromEvent) {
+          return;
+        }
+      }
+
+      const payload = payloadFromEvent ?? getPayloadFromPending(pending);
+      if (!payload) {
         return;
       }
 
-      const latest = pending[0];
-      const roomId = String(latest?.roomId ?? "");
-      const unreadCount = Number(latest?.unreadCount ?? 0);
-      const lastMessageId = String(latest?.lastMessageId ?? "");
-      const latestSenderAlias = String(latest?.latestSenderAlias ?? "");
+      const { roomId, unreadCount, lastMessageId, latestSenderAlias, title, body, url, kind } = payload;
       if (!roomId || unreadCount <= 0) {
-        return;
+        if (kind !== "test") {
+          return;
+        }
       }
 
       if (hasSeenMessageId(lastMessageId)) {
         void trackMetric("push_deduped");
         return;
       }
-      rememberMessageId(lastMessageId);
+      if (lastMessageId) {
+        rememberMessageId(lastMessageId);
+      }
 
       const hasVisibleWindow = clientList.some((client) => client.visibilityState === "visible");
       if (hasVisibleWindow && activeRoomId && activeRoomId === roomId) {
@@ -164,18 +234,13 @@ self.addEventListener("push", (event) => {
         return;
       }
 
-      const title = "New messages";
-      const summaryBody =
-        unreadCount > 1
-          ? `${unreadCount} new messages`
-          : "You have a new encrypted message.";
       const options = {
-        body: latestSenderAlias ? `${latestSenderAlias}: ${summaryBody}` : summaryBody,
+        body: latestSenderAlias ? `${latestSenderAlias}: ${body}` : body,
         icon: "/icon-192.png",
         badge: "/icon-192.png",
-        tag: `room:${roomId}`,
+        tag: roomId ? `room:${roomId}` : kind,
         renotify: false,
-        data: { url: `/chat?roomId=${encodeURIComponent(roomId)}`, roomId },
+        data: { url, roomId },
       };
 
       await self.registration.showNotification(title, options);

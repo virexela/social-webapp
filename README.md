@@ -20,7 +20,7 @@ cp .env.example .env.local
 - `RELAY_WS_AUTH_SECRET` (required when backend enforces WS token auth)
 - `ATTACHMENT_TOKEN_SECRET` (required in production; signs short-lived attachment download tokens)
 - optional at-rest push metadata encryption: `PUSH_DATA_ENCRYPTION_KEY` (32-byte hex/base64)
-- optional outbound push host control: `PUSH_ENDPOINT_ALLOWLIST` (comma-separated host/domain allowlist)
+- optional outbound push host control: `PUSH_ENDPOINT_ALLOWLIST` (comma-separated host/domain allowlist; bare hosts or full `https://` URLs are accepted)
 - optional for distributed API rate limiting: `RATE_LIMIT_REDIS_REST_URL`, `RATE_LIMIT_REDIS_REST_TOKEN`
 - optional proxy trust flag: `TRUST_X_FORWARDED_FOR=1` only when behind trusted reverse proxy
 3. Build and run:

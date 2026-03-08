@@ -14,7 +14,7 @@ class MockWebSocket {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onclose: ((event: CloseEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
-  send = jest.fn<void, [string]>();
+  send = jest.fn((_: string) => undefined);
   close = jest.fn(() => {
     this.readyState = MockWebSocket.CLOSED;
     this.onclose?.({} as CloseEvent);
