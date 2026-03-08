@@ -229,7 +229,7 @@ self.addEventListener("push", (event) => {
       }
 
       const hasVisibleWindow = clientList.some((client) => client.visibilityState === "visible");
-      if (hasVisibleWindow && activeRoomId && activeRoomId === roomId) {
+      if (hasVisibleWindow) {
         void trackMetric("push_suppressed");
         return;
       }
