@@ -256,7 +256,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
 
   const messages = contact?.messages ?? EMPTY_MESSAGES;
 
-  const socketRef = useRef<RelaySocket | null>(null);
+  const roomSocketRef = useRef<RelaySocket | null>(null);
   const socialIdRef = useRef<string>("");
   const [socialId] = useState<string>(() => {
     if (typeof window === "undefined") return "";
@@ -608,14 +608,14 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
 
   useEffect(() => {
     if (!contactRoomId || !contactConversationKey) {
-      socketRef.current?.close();
-      socketRef.current = null;
+      roomSocketRef.current?.close();
+      roomSocketRef.current = null;
       return;
     }
 
     if (RELAY_TOKEN_REQUIRED && !isRelayTokenUsable(relayToken, contactRoomId, "chat", 0)) {
-      socketRef.current?.close();
-      socketRef.current = null;
+      roomSocketRef.current?.close();
+      roomSocketRef.current = null;
       return;
     }
 
@@ -849,14 +849,18 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
     };
 
     const socket = new RelaySocket(buildRelayChatUrlCandidates(roomId!, relayToken ?? undefined), handleMsg);
-    socketRef.current = socket;
+    roomSocketRef.current = socket;
     socket.connectAndWaitOpen().catch(() => {
       // ignore warm-up failures during rapid remount
     });
 
     return () => {
-      socketRef.current?.close();
-      socketRef.current = null;
+      if (roomSocketRef.current === socket) {
+        roomSocketRef.current?.close();
+        roomSocketRef.current = null;
+      } else {
+        socket.close();
+      }
     };
   }, [
     contactRoomId,
@@ -947,24 +951,32 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
         throw new Error("Unable to obtain relay join token");
       }
 
-      let socket = socketRef.current;
-      if (!socket) {
-        socket = new RelaySocket(buildRelayChatUrlCandidates(activeRoomId, resolvedRelayToken));
-        socketRef.current = socket;
-      }
-
-      // Azure App Service can suspend websocket workers; allow extra wake-up time and one reconnect retry.
-      await socket.connectAndWaitOpen(20_000);
-
       const ciphertext = await encryptTransportMessage(JSON.stringify(payload), activeContact.conversationKey);
-      try {
+
+      const sendWithSocket = async (socket: RelaySocket) => {
+        await socket.connectAndWaitOpen(20_000);
         socket.sendJson({ ciphertext });
+      };
+
+      const roomSocket = roomSocketRef.current;
+      try {
+        if (roomSocket) {
+          await sendWithSocket(roomSocket);
+        } else {
+          const transientSocket = new RelaySocket(buildRelayChatUrlCandidates(activeRoomId, resolvedRelayToken));
+          try {
+            await sendWithSocket(transientSocket);
+          } finally {
+            transientSocket.close();
+          }
+        }
       } catch {
-        socket.close();
-        const retrySocket = new RelaySocket(buildRelayChatUrlCandidates(activeRoomId, resolvedRelayToken));
-        socketRef.current = retrySocket;
-        await retrySocket.connectAndWaitOpen(20_000);
-        retrySocket.sendJson({ ciphertext });
+        const transientSocket = new RelaySocket(buildRelayChatUrlCandidates(activeRoomId, resolvedRelayToken));
+        try {
+          await sendWithSocket(transientSocket);
+        } finally {
+          transientSocket.close();
+        }
       }
 
       const socialId = socialIdRef.current;
