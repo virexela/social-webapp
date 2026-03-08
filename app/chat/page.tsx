@@ -29,6 +29,7 @@ import { decryptDownloadedAttachment, encryptFileForAttachment } from "@/lib/pro
 import { sendEncryptedRoomPayload } from "@/lib/action/chatTransport";
 
 const EMPTY_MESSAGES: Array<import("@/lib/state/store").ChatMessage> = [];
+const RELAY_TOKEN_REQUIRED = process.env.NODE_ENV === "production";
 
 type EncryptedPayload =
   | {
@@ -426,6 +427,12 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
       return;
     }
 
+    if (RELAY_TOKEN_REQUIRED && !relayToken) {
+      socketRef.current?.close();
+      socketRef.current = null;
+      return;
+    }
+
     const roomIdForEffect = contactRoomId;
     const conversationKeyForEffect = contactConversationKey;
 
@@ -737,9 +744,22 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
   const sendEncryptedPayload = useCallback(
     async (payload: EncryptedPayload) => {
       if (!contact) return;
+
+      let resolvedRelayToken = relayToken ?? undefined;
+      if (RELAY_TOKEN_REQUIRED && !resolvedRelayToken) {
+        resolvedRelayToken = await fetchRelayJoinToken(contact.roomId, "chat", socialIdRef.current || undefined) ?? undefined;
+        if (resolvedRelayToken) {
+          setRelayToken(resolvedRelayToken);
+        }
+      }
+
+      if (RELAY_TOKEN_REQUIRED && !resolvedRelayToken) {
+        throw new Error("Unable to obtain relay join token");
+      }
+
       let socket = socketRef.current;
       if (!socket) {
-        socket = new RelaySocket(buildRelayChatUrlCandidates(roomId!, relayToken ?? undefined));
+        socket = new RelaySocket(buildRelayChatUrlCandidates(roomId!, resolvedRelayToken));
         socketRef.current = socket;
       }
 
@@ -751,7 +771,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
         socket.sendJson({ ciphertext });
       } catch {
         socket.close();
-        const retrySocket = new RelaySocket(buildRelayChatUrlCandidates(roomId!, relayToken ?? undefined));
+        const retrySocket = new RelaySocket(buildRelayChatUrlCandidates(roomId!, resolvedRelayToken));
         socketRef.current = retrySocket;
         await retrySocket.connectAndWaitOpen(20_000);
         retrySocket.sendJson({ ciphertext });
