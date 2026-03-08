@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureDatabaseConnection, getContactsCollection, getMessagesCollection, getRoomMembersCollection } from "@/lib/db/database";
+import { getContactsCollection, getMessagesCollection, getRoomMembersCollection, withDatabaseRetry } from "@/lib/db/database";
 import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
 import { blindStableId } from "@/lib/server/privacy";
 import { isValidSocialId, isValidRoomId, isValidMessageId, isValidTimestamp, isValidEncryptedMessageSize } from "@/lib/validation/schemas";
@@ -64,39 +64,43 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: "Invalid senderSocialId format" }, { status: 400 });
     }
 
-    await ensureDatabaseConnection();
-    const roomMembers = getRoomMembersCollection();
-    const messages = getMessagesCollection();
     const memberId = blindStableId(senderSocialId);
     const senderId = memberId;
-    const existingMembership = await roomMembers.findOne(
-      { memberId, roomId },
-      { projection: { _id: 1 } }
-    );
+    const existingMembership = await withDatabaseRetry(async () => {
+      const roomMembers = getRoomMembersCollection();
+      return roomMembers.findOne(
+        { memberId, roomId },
+        { projection: { _id: 1 } }
+      );
+    });
     if (!existingMembership) {
       return NextResponse.json({ success: false, error: "Forbidden: sender is not a room member" }, { status: 403 });
     }
 
     const now = new Date();
-    await messages.updateOne(
-      { roomId, messageId },
-      {
-        $set: {
-          roomId,
-          messageId,
-          encryptedContent,
-          timestamp,
-          updatedAt: now,
+    await withDatabaseRetry(async () => {
+      const roomMembers = getRoomMembersCollection();
+      const messages = getMessagesCollection();
+      await messages.updateOne(
+        { roomId, messageId },
+        {
+          $set: {
+            roomId,
+            messageId,
+            encryptedContent,
+            timestamp,
+            updatedAt: now,
+          },
+          $setOnInsert: {
+            senderId,
+            createdAt: now,
+          },
         },
-        $setOnInsert: {
-          senderId,
-          createdAt: now,
-        },
-      },
-      { upsert: true }
-    );
+        { upsert: true }
+      );
 
-    await roomMembers.updateOne({ memberId, roomId }, { $set: { updatedAt: now } });
+      await roomMembers.updateOne({ memberId, roomId }, { $set: { updatedAt: now } });
+    });
 
     return NextResponse.json({ success: true }, { status: 201 });
   } catch (err) {
@@ -123,33 +127,38 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: false, error: "Invalid roomId" }, { status: 400 });
     }
 
-    await ensureDatabaseConnection();
-    const contacts = getContactsCollection();
-    const roomMembers = getRoomMembersCollection();
-    const messages = getMessagesCollection();
     const ownerId = blindStableId(socialId);
 
-    const membership = await roomMembers.findOne({ roomId, memberId: ownerId }, { projection: { _id: 1 } });
-    const ownedContact = await contacts.findOne({ roomId, ownerId }, { projection: { _id: 1 } });
+    const membership = await withDatabaseRetry(async () => {
+      const roomMembers = getRoomMembersCollection();
+      return roomMembers.findOne({ roomId, memberId: ownerId }, { projection: { _id: 1 } });
+    });
+    const ownedContact = await withDatabaseRetry(async () => {
+      const contacts = getContactsCollection();
+      return contacts.findOne({ roomId, ownerId }, { projection: { _id: 1 } });
+    });
     if (!membership && !ownedContact) {
       return NextResponse.json({ success: false, error: "Forbidden: not a room member" }, { status: 403 });
     }
 
-    const docs = await messages
-      .find(
-        { roomId },
-        {
-          projection: {
-            _id: 0,
-            messageId: 1,
-            encryptedContent: 1,
-            timestamp: 1,
-            senderId: 1,
-          },
-        }
-      )
-      .sort({ timestamp: 1 })
-      .toArray();
+    const docs = await withDatabaseRetry(async () => {
+      const messages = getMessagesCollection();
+      return messages
+        .find(
+          { roomId },
+          {
+            projection: {
+              _id: 0,
+              messageId: 1,
+              encryptedContent: 1,
+              timestamp: 1,
+              senderId: 1,
+            },
+          }
+        )
+        .sort({ timestamp: 1 })
+        .toArray();
+    });
 
     const data = docs.map((d) => ({
       id: String(d.messageId),

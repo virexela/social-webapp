@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  ensureDatabaseConnection,
   getPresenceCollection,
   getRoomMembersCollection,
+  withDatabaseRetry,
 } from "@/lib/db/database";
 import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
 import { blindStableId } from "@/lib/server/privacy";
@@ -31,17 +31,17 @@ export async function POST(req: NextRequest) {
     const authError = await validateUserAuthenticationOrRespond(req, socialId);
     if (authError) return authError;
 
-    await ensureDatabaseConnection();
-    const presence = getPresenceCollection();
     const memberId = blindStableId(socialId);
     const now = new Date();
     const expiresAt = new Date(now.getTime() + PRESENCE_TTL_MS);
-
-    await presence.updateOne(
-      { memberId },
-      { $set: { memberId, updatedAt: now, expiresAt }, $setOnInsert: { createdAt: now } },
-      { upsert: true }
-    );
+    await withDatabaseRetry(async () => {
+      const presence = getPresenceCollection();
+      await presence.updateOne(
+        { memberId },
+        { $set: { memberId, updatedAt: now, expiresAt }, $setOnInsert: { createdAt: now } },
+        { upsert: true }
+      );
+    });
 
     return NextResponse.json({ success: true, expiresAt: expiresAt.toISOString() }, { status: 200 });
   } catch (err) {
@@ -70,17 +70,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: true, onlineByRoom: {} }, { status: 200 });
     }
 
-    await ensureDatabaseConnection();
     const ownerId = blindStableId(socialId);
-    const roomMembers = getRoomMembersCollection();
-    const presence = getPresenceCollection();
-
-    const membershipDocs = await roomMembers
-      .find(
-        { roomId: { $in: roomIds } },
-        { projection: { _id: 0, roomId: 1, memberId: 1 } }
-      )
-      .toArray();
+    const membershipDocs = await withDatabaseRetry(async () => {
+      const roomMembers = getRoomMembersCollection();
+      return roomMembers
+        .find(
+          { roomId: { $in: roomIds } },
+          { projection: { _id: 0, roomId: 1, memberId: 1 } }
+        )
+        .toArray();
+    });
 
     const peerIdsByRoom = new Map<string, Set<string>>();
     membershipDocs.forEach((doc) => {
@@ -96,12 +95,15 @@ export async function GET(req: NextRequest) {
     const activePeerIds = new Set<string>();
 
     if (peerIds.length > 0) {
-      const activeDocs = await presence
-        .find(
-          { memberId: { $in: peerIds }, expiresAt: { $gt: new Date() } },
-          { projection: { _id: 0, memberId: 1 } }
-        )
-        .toArray();
+      const activeDocs = await withDatabaseRetry(async () => {
+        const presence = getPresenceCollection();
+        return presence
+          .find(
+            { memberId: { $in: peerIds }, expiresAt: { $gt: new Date() } },
+            { projection: { _id: 0, memberId: 1 } }
+          )
+          .toArray();
+      });
       activeDocs.forEach((doc) => {
         const memberId = String(doc.memberId ?? "");
         if (memberId) activePeerIds.add(memberId);

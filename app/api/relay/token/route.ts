@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: false, error: "Invalid relay token request" }, { status: 400 });
     }
 
-    const token = createRelayJoinToken(roomId, scope);
+    const token = createRelayJoinToken(roomId, scope, 600);
     return NextResponse.json({ success: true, token }, { status: 200 });
   } catch (err) {
     return NextResponse.json({ success: false, error: (err as Error).message }, { status: 500 });

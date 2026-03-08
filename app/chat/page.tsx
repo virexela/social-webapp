@@ -30,6 +30,7 @@ import { sendEncryptedRoomPayload } from "@/lib/action/chatTransport";
 
 const EMPTY_MESSAGES: Array<import("@/lib/state/store").ChatMessage> = [];
 const RELAY_TOKEN_REQUIRED = process.env.NODE_ENV === "production";
+const RELAY_TOKEN_REFRESH_SKEW_MS = 60_000;
 
 type EncryptedPayload =
   | {
@@ -129,6 +130,49 @@ function createMessageId(): string {
     return `msg_${crypto.randomUUID()}`;
   }
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function parseRelayTokenPayload(token: string | null | undefined): { room?: string; scope?: string; exp?: number } | null {
+  if (!token) return null;
+  const [payloadB64] = token.split(".");
+  if (!payloadB64) return null;
+
+  try {
+    const base64 = payloadB64.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    const payloadJson = atob(padded);
+    return JSON.parse(payloadJson) as { room?: string; scope?: string; exp?: number };
+  } catch {
+    return null;
+  }
+}
+
+function isRelayTokenUsable(
+  token: string | null | undefined,
+  roomId: string,
+  scope: "chat" | "invite",
+  skewMs = RELAY_TOKEN_REFRESH_SKEW_MS
+): boolean {
+  const payload = parseRelayTokenPayload(token);
+  if (!payload || payload.room !== roomId || payload.scope !== scope || !Number.isFinite(payload.exp)) {
+    return false;
+  }
+
+  return payload.exp! * 1000 - Date.now() > skewMs;
+}
+
+function getRelayTokenRefreshDelayMs(
+  token: string | null | undefined,
+  roomId: string,
+  scope: "chat" | "invite",
+  skewMs = RELAY_TOKEN_REFRESH_SKEW_MS
+): number | null {
+  const payload = parseRelayTokenPayload(token);
+  if (!payload || payload.room !== roomId || payload.scope !== scope || !Number.isFinite(payload.exp)) {
+    return null;
+  }
+
+  return Math.max(0, payload.exp! * 1000 - Date.now() - skewMs);
 }
 
 function mergeSyncedMessages(localMessages: ChatMessage[], remoteMessages: ChatMessage[]): ChatMessage[] {
@@ -471,6 +515,9 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
     }
     let cancelled = false;
     void (async () => {
+      if (isRelayTokenUsable(relayToken, contactRoomId, "chat")) {
+        return;
+      }
       const token = await fetchRelayJoinToken(contactRoomId, "chat", socialId || undefined);
       if (!cancelled) {
         setRelayToken(token);
@@ -479,7 +526,32 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [contactRoomId, socialId]);
+  }, [contactRoomId, socialId, relayToken]);
+
+  useEffect(() => {
+    if (!contactRoomId || !relayToken || !isRelayTokenUsable(relayToken, contactRoomId, "chat", 0)) {
+      return;
+    }
+
+    const refreshDelayMs = getRelayTokenRefreshDelayMs(relayToken, contactRoomId, "chat");
+    if (refreshDelayMs === null) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        const token = await fetchRelayJoinToken(contactRoomId, "chat", socialId || undefined);
+        if (token) {
+          relayTokenRef.current = token;
+          setRelayToken(token);
+        }
+      })();
+    }, refreshDelayMs);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [contactRoomId, relayToken, socialId]);
 
   useEffect(() => {
     if (!contactRoomId || !contactConversationKey || !socialId || !_hydrated) return;
@@ -536,7 +608,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
       return;
     }
 
-    if (RELAY_TOKEN_REQUIRED && !relayToken) {
+    if (RELAY_TOKEN_REQUIRED && !isRelayTokenUsable(relayToken, contactRoomId, "chat", 0)) {
       socketRef.current?.close();
       socketRef.current = null;
       return;
@@ -857,7 +929,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
       if (!activeContact || !activeRoomId) return;
 
       let resolvedRelayToken = relayTokenRef.current ?? undefined;
-      if (RELAY_TOKEN_REQUIRED && !resolvedRelayToken) {
+      if (RELAY_TOKEN_REQUIRED && !isRelayTokenUsable(resolvedRelayToken, activeContact.roomId, "chat")) {
         resolvedRelayToken = await fetchRelayJoinToken(activeContact.roomId, "chat", socialIdRef.current || undefined) ?? undefined;
         if (resolvedRelayToken) {
           relayTokenRef.current = resolvedRelayToken;
@@ -865,7 +937,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
         }
       }
 
-      if (RELAY_TOKEN_REQUIRED && !resolvedRelayToken) {
+      if (RELAY_TOKEN_REQUIRED && !isRelayTokenUsable(resolvedRelayToken, activeContact.roomId, "chat", 0)) {
         throw new Error("Unable to obtain relay join token");
       }
 

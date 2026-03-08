@@ -62,6 +62,40 @@ export async function ensureDatabaseConnection(): Promise<void> {
   }
 }
 
+function isTransientMongoError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("connection pool") ||
+    normalized.includes("connection <monitor>") ||
+    normalized.includes("server selection timed out") ||
+    normalized.includes("topology is closed") ||
+    normalized.includes("connection closed") ||
+    normalized.includes("econnreset")
+  );
+}
+
+async function reconnectDatabase(): Promise<void> {
+  resetMongoClient();
+  await _connectOnce();
+  await ensureIndexes();
+  await runPeriodicMaintenance();
+}
+
+export async function withDatabaseRetry<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    await ensureDatabaseConnection();
+    return await operation();
+  } catch (err) {
+    if (!isTransientMongoError(err)) {
+      throw err;
+    }
+
+    await reconnectDatabase();
+    return await operation();
+  }
+}
+
 export function getDb(): Db {
   if (!globalWithMongo.__mongoClient) {
     throw new Error("MongoClient is not initialized. Call ensureDatabaseConnection() first.");

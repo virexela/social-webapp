@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureDatabaseConnection, getPushNotificationsCollection } from "@/lib/db/database";
+import { getPushNotificationsCollection, withDatabaseRetry } from "@/lib/db/database";
 import { blindStableId } from "@/lib/server/privacy";
 import { getSessionSocialIdFromRequest } from "@/lib/server/sessionAuth";
 
@@ -20,11 +20,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: "roomId is required" }, { status: 400 });
     }
 
-    await ensureDatabaseConnection();
-    const notifications = getPushNotificationsCollection();
     const ownerId = blindStableId(socialId);
-
-    await notifications.deleteOne({ ownerId, roomId });
+    await withDatabaseRetry(async () => {
+      const notifications = getPushNotificationsCollection();
+      await notifications.deleteOne({ ownerId, roomId });
+    });
 
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (err) {

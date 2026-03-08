@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureDatabaseConnection, getContactsCollection, getRoomMembersCollection } from "@/lib/db/database";
+import { getContactsCollection, getRoomMembersCollection, withDatabaseRetry } from "@/lib/db/database";
 import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware";
 import { blindStableId } from "@/lib/server/privacy";
 import { getSessionSocialIdFromRequest } from "@/lib/server/sessionAuth";
@@ -60,29 +60,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: "Invalid contact payload" }, { status: 400 });
     }
 
-    await ensureDatabaseConnection();
-    const contacts = getContactsCollection();
-    const roomMembers = getRoomMembersCollection();
     const ownerId = blindStableId(socialId);
+    await withDatabaseRetry(async () => {
+      const contacts = getContactsCollection();
+      const roomMembers = getRoomMembersCollection();
 
-    await contacts.updateOne(
-      { ownerId, roomId },
-      {
-        $set: { ownerId, roomId, encryptedContact, updatedAt: new Date() },
-        $setOnInsert: { createdAt: new Date() },
-      },
-      { upsert: true }
-    );
+      await contacts.updateOne(
+        { ownerId, roomId },
+        {
+          $set: { ownerId, roomId, encryptedContact, updatedAt: new Date() },
+          $setOnInsert: { createdAt: new Date() },
+        },
+        { upsert: true }
+      );
 
-    const now = new Date();
-    await roomMembers.updateOne(
-      { memberId: ownerId, roomId },
-      {
-        $set: { memberId: ownerId, roomId, updatedAt: now },
-        $setOnInsert: { createdAt: now },
-      },
-      { upsert: true }
-    );
+      const now = new Date();
+      await roomMembers.updateOne(
+        { memberId: ownerId, roomId },
+        {
+          $set: { memberId: ownerId, roomId, updatedAt: now },
+          $setOnInsert: { createdAt: now },
+        },
+        { upsert: true }
+      );
+    });
 
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (err) {
@@ -104,13 +105,14 @@ export async function GET(req: NextRequest) {
     const authError = await validateUserAuthenticationOrRespond(req, socialId);
     if (authError) return authError;
 
-    await ensureDatabaseConnection();
     const contacts = getContactsCollection();
     const ownerId = blindStableId(socialId);
-
-    const docs = await contacts
-      .find({ ownerId }, { projection: { _id: 0, roomId: 1, encryptedContact: 1 } })
-      .toArray();
+    const docs = await withDatabaseRetry(async () => {
+      const contacts = getContactsCollection();
+      return contacts
+        .find({ ownerId }, { projection: { _id: 0, roomId: 1, encryptedContact: 1 } })
+        .toArray();
+    });
 
     return NextResponse.json(
       {
