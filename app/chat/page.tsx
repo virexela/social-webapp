@@ -792,38 +792,38 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
   );
 
   const retryQueuedOutgoing = useCallback(async () => {
-    if (!contact) return;
+    if (!contactRoomId || !contactConversationKey) return;
     if (!navigator.onLine) return;
 
     const socialId = socialIdRef.current;
     if (!socialId) return;
 
-    const queued = getOutboxForRoom(contact.roomId);
+    const queued = getOutboxForRoom(contactRoomId);
     if (queued.length === 0) return;
 
     for (const queuedItem of queued) {
-      setMessageStatus(contact.conversationKey, queuedItem.message.id, "sending");
+      setMessageStatus(contactConversationKey, queuedItem.message.id, "sending");
       try {
         await sendEncryptedPayload(queuedItem.payload);
         const persisted = await saveMessageToDB({
           senderSocialId: socialId,
-          roomId: contact.roomId,
+          roomId: contactRoomId,
           message: { ...queuedItem.message, status: "sent" },
         });
         if (!persisted.success) {
           throw new Error(persisted.error || "Failed to persist queued message");
         }
-        setMessageStatus(contact.conversationKey, queuedItem.message.id, "sent");
+        setMessageStatus(contactConversationKey, queuedItem.message.id, "sent");
         dequeueOutboxItem(queuedItem.message.id);
       } catch {
-        setMessageStatus(contact.conversationKey, queuedItem.message.id, "failed");
+        setMessageStatus(contactConversationKey, queuedItem.message.id, "failed");
         break;
       }
     }
-  }, [contact, sendEncryptedPayload, setMessageStatus]);
+  }, [contactConversationKey, contactRoomId, sendEncryptedPayload, setMessageStatus]);
 
   useEffect(() => {
-    if (!contact) return;
+    if (!contactRoomId) return;
 
     const runRetry = () => {
       void retryQueuedOutgoing();
@@ -842,7 +842,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
       window.removeEventListener("online", runRetry);
       window.clearInterval(intervalId);
     };
-  }, [contact, retryQueuedOutgoing]);
+  }, [contactRoomId, retryQueuedOutgoing]);
 
   const sendMessage = useCallback(async () => {
     if (!contact || !message.trim()) return;

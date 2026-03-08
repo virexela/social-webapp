@@ -1,5 +1,16 @@
 let validated = false;
 
+function readRelaySecret(): string {
+  const relaySecret = process.env.RELAY_WS_AUTH_SECRET?.trim() ?? "";
+  const wsSecret = process.env.WS_AUTH_SECRET?.trim() ?? "";
+
+  if (relaySecret && wsSecret && relaySecret !== wsSecret) {
+    throw new Error("RELAY_WS_AUTH_SECRET and WS_AUTH_SECRET must match when both are set");
+  }
+
+  return relaySecret || wsSecret;
+}
+
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) {
@@ -55,7 +66,7 @@ export function validateServerConfig(): void {
     throw new Error("SESSION_HASH_PEPPER is required in production");
   }
 
-  const relaySecret = (process.env.RELAY_WS_AUTH_SECRET ?? process.env.WS_AUTH_SECRET)?.trim();
+  const relaySecret = readRelaySecret();
   if (process.env.NODE_ENV === "production" && !relaySecret) {
     throw new Error("RELAY_WS_AUTH_SECRET (or WS_AUTH_SECRET) is required in production");
   }
