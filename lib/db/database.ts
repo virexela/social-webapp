@@ -20,23 +20,46 @@ type GlobalWithMongo = typeof globalThis & {
 
 const globalWithMongo = globalThis as GlobalWithMongo;
 
+function resetMongoClient() {
+  const client = globalWithMongo.__mongoClient;
+  globalWithMongo.__mongoClient = undefined;
+  globalWithMongo.__mongoClientPromise = undefined;
+
+  if (client) {
+    void client.close().catch(() => undefined);
+  }
+}
+
 async function _connectOnce(): Promise<MongoClient> {
   if (!globalWithMongo.__mongoClientPromise) {
     globalWithMongo.__mongoClient = new MongoClient(uri!, {
-      maxPoolSize: 50,
-      minPoolSize: 5,
+      maxPoolSize: 10,
+      minPoolSize: 0,
+      maxIdleTimeMS: 30_000,
       serverSelectionTimeoutMS: 10_000,
     });
     globalWithMongo.__mongoClientPromise = globalWithMongo.__mongoClient.connect();
   }
-  await globalWithMongo.__mongoClientPromise;
+
+  try {
+    await globalWithMongo.__mongoClientPromise;
+  } catch (err) {
+    resetMongoClient();
+    throw err;
+  }
+
   return globalWithMongo.__mongoClient!;
 }
 
 export async function ensureDatabaseConnection(): Promise<void> {
-  await _connectOnce();
-  await ensureIndexes();
-  await runPeriodicMaintenance();
+  try {
+    await _connectOnce();
+    await ensureIndexes();
+    await runPeriodicMaintenance();
+  } catch (err) {
+    resetMongoClient();
+    throw err;
+  }
 }
 
 export function getDb(): Db {
