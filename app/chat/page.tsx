@@ -131,6 +131,44 @@ function createMessageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function mergeSyncedMessages(localMessages: ChatMessage[], remoteMessages: ChatMessage[]): ChatMessage[] {
+  const merged = new Map<string, ChatMessage>();
+
+  for (const message of [...localMessages, ...remoteMessages]) {
+    const existing = merged.get(message.id);
+    if (!existing) {
+      merged.set(message.id, message);
+      continue;
+    }
+
+    merged.set(message.id, {
+      ...existing,
+      ...message,
+      timestamp: Math.min(existing.timestamp, message.timestamp),
+      status: message.status ?? existing.status,
+      reactions: message.reactions ?? existing.reactions,
+    });
+  }
+
+  return Array.from(merged.values()).sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function messageListsDiffer(left: ChatMessage[], right: ChatMessage[]): boolean {
+  if (left.length !== right.length) return true;
+
+  return left.some((message, index) => {
+    const other = right[index];
+    if (!other) return true;
+    return (
+      message.id !== other.id ||
+      message.timestamp !== other.timestamp ||
+      message.status !== other.status ||
+      message.content !== other.content ||
+      (message.reactions?.length ?? 0) !== (other.reactions?.length ?? 0)
+    );
+  });
+}
+
 function resolveOutgoingSenderAlias(
   isGroup: boolean | undefined,
   currentMemberId: string,
@@ -419,6 +457,54 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
       cancelled = true;
     };
   }, [contactRoomId, socialId]);
+
+  useEffect(() => {
+    if (!contactRoomId || !contactConversationKey || !socialId || !_hydrated) return;
+
+    let cancelled = false;
+
+    const syncMessages = async () => {
+      const history = await getMessagesFromDB(
+        contactRoomId,
+        contactConversationKey,
+        socialId,
+        currentMemberId || undefined
+      );
+      if (!history.success || !history.messages || cancelled) return;
+
+      const merged = mergeSyncedMessages(messagesRef.current, history.messages);
+      if (!messageListsDiffer(messagesRef.current, merged)) return;
+
+      replaceMessages(contactConversationKey, merged);
+
+      if (contact?.isGroup) {
+        merged.forEach((message) => {
+          if (message.senderMemberId && message.senderAlias && !isGeneratedAlias(message.senderAlias)) {
+            upsertParticipant(contactRoomId, message.senderMemberId, message.senderAlias);
+          }
+        });
+      }
+    };
+
+    void syncMessages();
+    const intervalId = window.setInterval(() => {
+      void syncMessages();
+    }, 8000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [
+    contactRoomId,
+    contactConversationKey,
+    socialId,
+    _hydrated,
+    currentMemberId,
+    replaceMessages,
+    upsertParticipant,
+    contact?.isGroup,
+  ]);
 
   useEffect(() => {
     if (!contactRoomId || !contactConversationKey) {

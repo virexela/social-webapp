@@ -31,6 +31,10 @@ export class RelaySocket {
     };
   }
 
+  private removeOpenWaiter(waiter: OpenWaiter) {
+    this.openWaiters = this.openWaiters.filter((w) => w !== waiter);
+  }
+
   connect() {
     if (this.state === "open" || this.state === "connecting") return;
     this.allowReconnect = true;
@@ -86,11 +90,7 @@ export class RelaySocket {
 
     this.connect();
     await new Promise<void>((resolve, reject) => {
-      const timer = window.setTimeout(() => {
-        reject(new Error("WebSocket open timed out"));
-      }, timeoutMs);
-
-      this.openWaiters.push({
+      const waiter: OpenWaiter = {
         resolve: () => {
           window.clearTimeout(timer);
           resolve();
@@ -99,9 +99,25 @@ export class RelaySocket {
           window.clearTimeout(timer);
           reject(error);
         },
-      });
+      };
+
+      const timer = window.setTimeout(() => {
+        this.removeOpenWaiter(waiter);
+        this.allowReconnect = false;
+        if (this.reconnectTimer) {
+          window.clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+        this.state = "closed";
+        this.ws?.close();
+        this.ws = null;
+        reject(new Error("WebSocket open timed out"));
+      }, timeoutMs);
+
+      this.openWaiters.push(waiter);
       const currentWs = this.ws;
       if (!currentWs) {
+        this.removeOpenWaiter(waiter);
         window.clearTimeout(timer);
         reject(new Error("WebSocket initialization failed"));
       }

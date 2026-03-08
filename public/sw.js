@@ -78,10 +78,7 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (requestUrl.origin !== self.location.origin) return;
-  if (requestUrl.pathname.startsWith("/api/")) {
-    event.respondWith(fetch(event.request));
-    return;
-  }
+  if (requestUrl.pathname.startsWith("/api/")) return;
   if (!(requestUrl.pathname.startsWith("/_next/") || requestUrl.pathname.startsWith("/icon-") || requestUrl.pathname.endsWith(".png") || requestUrl.pathname.endsWith(".svg") || requestUrl.pathname.endsWith(".webmanifest"))) {
     return;
   }
