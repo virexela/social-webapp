@@ -1,4 +1,4 @@
-import { base64UrlToBytes, bytesToBase64Url } from "@/lib/protocol/base64url";
+import { bytesToBase64Url } from "@/lib/protocol/base64url";
 import { decryptTransportMessage, encryptTransportMessage } from "@/lib/protocol/transportCrypto";
 
 const FILE_IV_LENGTH = 12;
@@ -8,7 +8,7 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 export async function encryptFileForAttachment(file: File, conversationKey: string): Promise<{
-  encryptedBlobBase64Url: string;
+  encryptedBytes: Uint8Array;
   wrappedFileKey: string;
   wrappedFileKeyVersion: number;
   plaintextByteLength: number;
@@ -28,7 +28,7 @@ export async function encryptFileForAttachment(file: File, conversationKey: stri
   const wrappedFileKey = await encryptTransportMessage(fileKeyBase64Url, conversationKey);
 
   return {
-    encryptedBlobBase64Url: bytesToBase64Url(packed),
+    encryptedBytes: packed,
     wrappedFileKey,
     wrappedFileKeyVersion: 1,
     plaintextByteLength: plaintextBytes.length,
@@ -36,15 +36,17 @@ export async function encryptFileForAttachment(file: File, conversationKey: stri
 }
 
 export async function decryptDownloadedAttachment(
-  encryptedBlobBase64Url: string,
+  encryptedPayload: Uint8Array | ArrayBuffer,
   wrappedFileKey: string,
   conversationKey: string,
   wrappedFileKeyVersion = 1
 ): Promise<Uint8Array> {
   void wrappedFileKeyVersion;
   const fileKeyBase64Url = await decryptTransportMessage(wrappedFileKey, conversationKey);
-  const fileKey = base64UrlToBytes(fileKeyBase64Url);
-  const packed = base64UrlToBytes(encryptedBlobBase64Url);
+  const fileKeyBase64 = fileKeyBase64Url.replace(/-/g, "+").replace(/_/g, "/");
+  const fileKeyPadded = fileKeyBase64.padEnd(Math.ceil(fileKeyBase64.length / 4) * 4, "=");
+  const fileKey = new Uint8Array(Uint8Array.from(atob(fileKeyPadded), (char) => char.charCodeAt(0)));
+  const packed = encryptedPayload instanceof Uint8Array ? encryptedPayload : new Uint8Array(encryptedPayload);
 
   if (packed.length <= FILE_IV_LENGTH) {
     throw new Error("Invalid encrypted attachment payload");

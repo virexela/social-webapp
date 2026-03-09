@@ -23,11 +23,13 @@ interface InitUploadPayload {
   fileName: string;
   mimeType: string;
   plaintextByteLength: number;
+  encryptedByteLength?: number;
   encryptedBlobLength: number;
   totalChunks: number;
 }
 
 const MAX_PLAINTEXT_BYTES = 25 * 1024 * 1024;
+const MAX_ENCRYPTED_BINARY_BYTES = 26 * 1024 * 1024;
 const MAX_ENCRYPTED_BLOB_CHARS = 36 * 1024 * 1024;
 const MAX_CHUNKS = 512;
 const UPLOAD_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -41,8 +43,11 @@ export async function POST(req: NextRequest) {
     const fileName = body.fileName?.trim();
     const mimeType = body.mimeType?.trim().toLowerCase();
     const plaintextByteLength = Number(body.plaintextByteLength);
+    const encryptedByteLength = Number(body.encryptedByteLength);
     const encryptedBlobLength = Number(body.encryptedBlobLength);
     const totalChunks = Number(body.totalChunks);
+    const uploadEncoding = Number.isFinite(encryptedByteLength) && encryptedByteLength > 0 ? "binary" : "base64url";
+    const normalizedEncryptedLength = uploadEncoding === "binary" ? encryptedByteLength : encryptedBlobLength;
 
     if (!socialId || !roomId || !messageId || !fileName || !mimeType) {
       return NextResponse.json({ success: false, error: "Invalid upload init payload" }, { status: 400 });
@@ -60,9 +65,11 @@ export async function POST(req: NextRequest) {
       !Number.isFinite(plaintextByteLength) ||
       plaintextByteLength <= 0 ||
       plaintextByteLength > MAX_PLAINTEXT_BYTES ||
-      !Number.isFinite(encryptedBlobLength) ||
-      encryptedBlobLength <= 0 ||
-      encryptedBlobLength > MAX_ENCRYPTED_BLOB_CHARS ||
+      !Number.isFinite(normalizedEncryptedLength) ||
+      normalizedEncryptedLength <= 0 ||
+      (uploadEncoding === "binary"
+        ? normalizedEncryptedLength > MAX_ENCRYPTED_BINARY_BYTES
+        : normalizedEncryptedLength > MAX_ENCRYPTED_BLOB_CHARS) ||
       !Number.isFinite(totalChunks) ||
       totalChunks < 1 ||
       totalChunks > MAX_CHUNKS
@@ -112,7 +119,9 @@ export async function POST(req: NextRequest) {
       fileName,
       mimeType,
       plaintextByteLength,
-      encryptedBlobLength,
+      encryptedByteLength: uploadEncoding === "binary" ? normalizedEncryptedLength : undefined,
+      encryptedBlobLength: uploadEncoding === "base64url" ? normalizedEncryptedLength : undefined,
+      uploadEncoding,
       totalChunks,
       createdAt: now,
       updatedAt: now,

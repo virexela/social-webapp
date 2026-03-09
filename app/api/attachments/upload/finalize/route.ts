@@ -10,6 +10,27 @@ import { validateUserAuthenticationOrRespond } from "@/lib/server/authMiddleware
 import { blindStableId } from "@/lib/server/privacy";
 import { isValidRoomId, isValidSocialId } from "@/lib/validation/schemas";
 
+function base64UrlToBuffer(input: string): Buffer {
+  const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  return Buffer.from(padded, "base64");
+}
+
+function toBuffer(value: unknown): Buffer {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (value && typeof value === "object") {
+    const candidate = value as { buffer?: Uint8Array; value?: (asRaw?: boolean) => Uint8Array };
+    if (candidate.buffer instanceof Uint8Array) {
+      return Buffer.from(candidate.buffer);
+    }
+    if (typeof candidate.value === "function") {
+      return Buffer.from(candidate.value(true));
+    }
+  }
+  return Buffer.alloc(0);
+}
+
 interface FinalizeUploadPayload {
   socialId: string;
   roomId: string;
@@ -52,7 +73,9 @@ export async function POST(req: NextRequest) {
           mimeType: 1,
           plaintextByteLength: 1,
           totalChunks: 1,
+          encryptedByteLength: 1,
           encryptedBlobLength: 1,
+          uploadEncoding: 1,
         },
       }
     );
@@ -61,7 +84,7 @@ export async function POST(req: NextRequest) {
     }
 
     const chunkDocs = await chunks
-      .find({ uploadId }, { projection: { _id: 0, chunkIndex: 1, chunkDataBase64Url: 1 } })
+      .find({ uploadId }, { projection: { _id: 0, chunkIndex: 1, chunkDataBase64Url: 1, chunkData: 1 } })
       .sort({ chunkIndex: 1 })
       .toArray();
 
@@ -76,10 +99,21 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const encryptedBlobBase64Url = chunkDocs.map((doc) => String(doc.chunkDataBase64Url ?? "")).join("");
-    const expectedLength = Number(session.encryptedBlobLength ?? 0);
-    if (expectedLength > 0 && encryptedBlobBase64Url.length !== expectedLength) {
-      return NextResponse.json({ success: false, error: "Upload payload mismatch" }, { status: 409 });
+    let encryptedBlob: Buffer;
+    if (session.uploadEncoding === "binary") {
+      const parts = chunkDocs.map((doc) => toBuffer(doc.chunkData));
+      encryptedBlob = Buffer.concat(parts);
+      const expectedLength = Number(session.encryptedByteLength ?? 0);
+      if (expectedLength > 0 && encryptedBlob.length !== expectedLength) {
+        return NextResponse.json({ success: false, error: "Upload payload mismatch" }, { status: 409 });
+      }
+    } else {
+      const encryptedBlobBase64Url = chunkDocs.map((doc) => String(doc.chunkDataBase64Url ?? "")).join("");
+      const expectedLength = Number(session.encryptedBlobLength ?? 0);
+      if (expectedLength > 0 && encryptedBlobBase64Url.length !== expectedLength) {
+        return NextResponse.json({ success: false, error: "Upload payload mismatch" }, { status: 409 });
+      }
+      encryptedBlob = base64UrlToBuffer(encryptedBlobBase64Url);
     }
 
     const now = new Date();
@@ -94,7 +128,8 @@ export async function POST(req: NextRequest) {
       fileName: String(session.fileName ?? "attachment.bin"),
       mimeType: String(session.mimeType ?? "application/octet-stream"),
       plaintextByteLength: Number(session.plaintextByteLength ?? 0),
-      encryptedBlobBase64Url,
+      encryptedByteLength: encryptedBlob.length,
+      encryptedBlob,
       createdAt: now,
       updatedAt: now,
       expiresAt,

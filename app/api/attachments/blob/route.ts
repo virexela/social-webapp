@@ -15,6 +15,21 @@ function buildDownloadName(fileName: string): string {
   return cleaned || "attachment.bin";
 }
 
+function toBuffer(value: unknown): Buffer {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (value && typeof value === "object") {
+    const candidate = value as { buffer?: Uint8Array; value?: (asRaw?: boolean) => Uint8Array };
+    if (candidate.buffer instanceof Uint8Array) {
+      return Buffer.from(candidate.buffer);
+    }
+    if (typeof candidate.value === "function") {
+      return Buffer.from(candidate.value(true));
+    }
+  }
+  return Buffer.alloc(0);
+}
+
 export async function GET(req: NextRequest) {
   try {
     const token = req.nextUrl.searchParams.get("token")?.trim();
@@ -48,14 +63,14 @@ export async function GET(req: NextRequest) {
         roomId: payload.roomId,
         expiresAt: { $gt: new Date() },
       },
-      { projection: { encryptedBlobBase64Url: 1, mimeType: 1, fileName: 1, _id: 0 } }
+      { projection: { encryptedBlob: 1, encryptedBlobBase64Url: 1, encryptedByteLength: 1, mimeType: 1, fileName: 1, _id: 0 } }
     );
 
-    if (!attachment?.encryptedBlobBase64Url) {
+    if (!attachment?.encryptedBlob && !attachment?.encryptedBlobBase64Url) {
       return NextResponse.json({ success: false, error: "Attachment not found or expired" }, { status: 404 });
     }
 
-    const binary = base64UrlToBuffer(String(attachment.encryptedBlobBase64Url));
+    const binary = attachment.encryptedBlob ? toBuffer(attachment.encryptedBlob) : base64UrlToBuffer(String(attachment.encryptedBlobBase64Url));
     const bodyBytes = new Uint8Array(binary);
     const fileName = buildDownloadName(String(attachment.fileName ?? "attachment.bin"));
     const mimeType = String(attachment.mimeType ?? "application/octet-stream");
@@ -64,6 +79,7 @@ export async function GET(req: NextRequest) {
       status: 200,
       headers: {
         "Content-Type": mimeType,
+        "Content-Length": String(Number(attachment.encryptedByteLength ?? bodyBytes.byteLength)),
         "Content-Disposition": `attachment; filename="${fileName}"`,
         "Cache-Control": "private, no-store",
       },

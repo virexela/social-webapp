@@ -99,6 +99,16 @@ type EncryptedPayload =
   | { type: "message_deleted"; roomId: string; messageId: string }
   | { type: "contact_removed"; roomId: string };
 
+type AttachmentTransferPhase = "encrypting" | "uploading" | "finalizing" | "downloading" | "decrypting" | "complete" | "error";
+
+interface AttachmentTransferState {
+  direction: "upload" | "download";
+  fileName: string;
+  phase: AttachmentTransferPhase;
+  progress: number;
+  error?: string;
+}
+
 function defaultAliasForMember(memberId?: string): string {
   if (!memberId) return "peer-unknown";
   return `peer-${memberId.slice(0, 6)}`;
@@ -116,6 +126,27 @@ function formatMessageTime(timestamp: number): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatAttachmentTransferLabel(transfer: AttachmentTransferState): string {
+  switch (transfer.phase) {
+    case "encrypting":
+      return "Encrypting";
+    case "uploading":
+      return `Uploading ${transfer.progress}%`;
+    case "finalizing":
+      return "Finalizing upload";
+    case "downloading":
+      return transfer.progress > 0 ? `Downloading ${transfer.progress}%` : "Downloading";
+    case "decrypting":
+      return "Decrypting";
+    case "complete":
+      return transfer.direction === "upload" ? "Uploaded" : "Downloaded";
+    case "error":
+      return transfer.error || "Transfer failed";
+    default:
+      return "Working";
+  }
 }
 
 function summarizeMessageForReply(message: ChatMessage): string {
@@ -267,6 +298,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
   const [relayToken, setRelayToken] = useState<string | null>(null);
   const [currentMemberId, setCurrentMemberId] = useState<string>("");
   const [attachmentObjectUrls, setAttachmentObjectUrls] = useState<Record<string, string>>({});
+  const [attachmentTransfers, setAttachmentTransfers] = useState<Record<string, AttachmentTransferState>>({});
   const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
   const contactRef = useRef(contact);
@@ -276,6 +308,8 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
   const contactConversationKeyRef = useRef(contactConversationKey);
   const currentMemberIdRef = useRef(currentMemberId);
   const retryInFlightRef = useRef(false);
+  const attachmentSendQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const transferCleanupTimeoutsRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -303,9 +337,13 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
   }, [contactRoomId, contactConversationKey]);
 
   useEffect(() => {
+    const cleanupTimeouts = transferCleanupTimeoutsRef.current;
     return () => {
       Object.values(attachmentObjectUrls).forEach((url) => {
         URL.revokeObjectURL(url);
+      });
+      Object.values(cleanupTimeouts).forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
       });
     };
   }, [attachmentObjectUrls]);
@@ -492,6 +530,34 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
     },
     [contactConversationKey, replaceMessages, contact]
   );
+
+  const setAttachmentTransfer = useCallback((messageId: string, next: AttachmentTransferState | null) => {
+    const existingTimeout = transferCleanupTimeoutsRef.current[messageId];
+    if (existingTimeout) {
+      window.clearTimeout(existingTimeout);
+      delete transferCleanupTimeoutsRef.current[messageId];
+    }
+
+    setAttachmentTransfers((prev) => {
+      if (!next) {
+        const nextState = { ...prev };
+        delete nextState[messageId];
+        return nextState;
+      }
+      return { ...prev, [messageId]: next };
+    });
+
+    if (next && next.phase === "complete") {
+      transferCleanupTimeoutsRef.current[messageId] = window.setTimeout(() => {
+        setAttachmentTransfers((prev) => {
+          const nextState = { ...prev };
+          delete nextState[messageId];
+          return nextState;
+        });
+        delete transferCleanupTimeoutsRef.current[messageId];
+      }, 1800);
+    }
+  }, []);
 
   const updateGroupInviteStatusLocally = useCallback(
     (messageId: string, status: "accepted" | "declined") => {
@@ -904,14 +970,42 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
         return;
       }
 
-      const encryptedResult = await downloadEncryptedAttachment(tokenResult.token);
-      if (!encryptedResult.success || !encryptedResult.encryptedBlobBase64Url) {
+      setAttachmentTransfer(message.id, {
+        direction: "download",
+        fileName: message.fileName || "attachment.bin",
+        phase: "downloading",
+        progress: 0,
+      });
+
+      const encryptedResult = await downloadEncryptedAttachment(tokenResult.token, ({ percent }) => {
+        setAttachmentTransfer(message.id, {
+          direction: "download",
+          fileName: message.fileName || "attachment.bin",
+          phase: "downloading",
+          progress: percent,
+        });
+      });
+      if (!encryptedResult.success || !encryptedResult.encryptedBytes) {
+        setAttachmentTransfer(message.id, {
+          direction: "download",
+          fileName: message.fileName || "attachment.bin",
+          phase: "error",
+          progress: 0,
+          error: encryptedResult.error || "Failed to download encrypted attachment",
+        });
         setError(encryptedResult.error || "Failed to download encrypted attachment");
         return;
       }
 
+      setAttachmentTransfer(message.id, {
+        direction: "download",
+        fileName: message.fileName || encryptedResult.fileName || "attachment.bin",
+        phase: "decrypting",
+        progress: 100,
+      });
+
       const decryptedBytes = await decryptDownloadedAttachment(
-        encryptedResult.encryptedBlobBase64Url,
+        encryptedResult.encryptedBytes,
         message.wrappedFileKey,
         message.conversationKey,
         message.wrappedFileKeyVersion ?? 1
@@ -928,8 +1022,15 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
       anchor.href = url;
       anchor.download = message.fileName || encryptedResult.fileName || "attachment.bin";
       anchor.click();
+
+      setAttachmentTransfer(message.id, {
+        direction: "download",
+        fileName: message.fileName || encryptedResult.fileName || "attachment.bin",
+        phase: "complete",
+        progress: 100,
+      });
     },
-    [attachmentObjectUrls, contact, socialId]
+    [attachmentObjectUrls, contact, setAttachmentTransfer, socialId]
   );
 
   const sendEncryptedPayload = useCallback(
@@ -1176,22 +1277,8 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
           ? selfAlias
           : replyTarget.senderAlias || defaultAliasForMember(replyTarget.senderMemberId)
         : undefined;
-      const encryptedAttachment = await encryptFileForAttachment(file, contact.conversationKey);
-      const uploaded = await uploadEncryptedAttachment({
-        socialId,
-        roomId: contact.roomId,
-        messageId: id,
-        fileName: file.name,
-        mimeType: file.type || "application/octet-stream",
-        encryptedBlobBase64Url: encryptedAttachment.encryptedBlobBase64Url,
-        plaintextByteLength: encryptedAttachment.plaintextByteLength,
-      });
-      if (!uploaded.success || !uploaded.attachmentId) {
-        setError(uploaded.error || "Failed to upload encrypted attachment");
-        return;
-      }
 
-      const newMessage: ChatMessage = {
+      const baseMessage: ChatMessage = {
         id,
         content: file.name,
         conversationKey: contact.conversationKey,
@@ -1203,17 +1290,75 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
         kind: "file",
         fileName: file.name,
         mimeType: file.type || "application/octet-stream",
-        attachmentId: uploaded.attachmentId,
-        wrappedFileKey: encryptedAttachment.wrappedFileKey,
-        wrappedFileKeyVersion: encryptedAttachment.wrappedFileKeyVersion,
-        attachmentSize: encryptedAttachment.plaintextByteLength,
+        attachmentSize: file.size,
         replyToMessageId,
         replyToContent,
         replyToSenderAlias,
         reactions: [],
       };
-      addMessage(newMessage, contact.conversationKey);
+      addMessage(baseMessage, contact.conversationKey);
       setReplyTarget(null);
+      setAttachmentTransfer(id, {
+        direction: "upload",
+        fileName: file.name,
+        phase: "encrypting",
+        progress: 0,
+      });
+
+      let encryptedAttachment;
+      try {
+        encryptedAttachment = await encryptFileForAttachment(file, contact.conversationKey);
+      } catch (err) {
+        setAttachmentTransfer(id, {
+          direction: "upload",
+          fileName: file.name,
+          phase: "error",
+          progress: 0,
+          error: (err as Error).message || "Failed to encrypt attachment",
+        });
+        setMessageStatus(contact.conversationKey, id, "failed");
+        setError((err as Error).message || "Failed to encrypt attachment");
+        return;
+      }
+
+      const uploaded = await uploadEncryptedAttachment({
+        socialId,
+        roomId: contact.roomId,
+        messageId: id,
+        fileName: file.name,
+        mimeType: file.type || "application/octet-stream",
+        encryptedBytes: encryptedAttachment.encryptedBytes,
+        plaintextByteLength: encryptedAttachment.plaintextByteLength,
+        onProgress: ({ percent, phase }) => {
+          setAttachmentTransfer(id, {
+            direction: "upload",
+            fileName: file.name,
+            phase,
+            progress: percent,
+          });
+        },
+      });
+      if (!uploaded.success || !uploaded.attachmentId) {
+        setAttachmentTransfer(id, {
+          direction: "upload",
+          fileName: file.name,
+          phase: "error",
+          progress: 0,
+          error: uploaded.error || "Failed to upload encrypted attachment",
+        });
+        setMessageStatus(contact.conversationKey, id, "failed");
+        setError(uploaded.error || "Failed to upload encrypted attachment");
+        return;
+      }
+
+      const newMessage: ChatMessage = {
+        ...baseMessage,
+        attachmentId: uploaded.attachmentId,
+        wrappedFileKey: encryptedAttachment.wrappedFileKey,
+        wrappedFileKeyVersion: encryptedAttachment.wrappedFileKeyVersion,
+        attachmentSize: encryptedAttachment.plaintextByteLength,
+      };
+      addMessage(newMessage, contact.conversationKey);
 
       try {
         await sendEncryptedPayload({
@@ -1232,10 +1377,23 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
           replyToSenderAlias,
         });
         setMessageStatus(contact.conversationKey, id, "sent");
+        setAttachmentTransfer(id, {
+          direction: "upload",
+          fileName: file.name,
+          phase: "complete",
+          progress: 100,
+        });
         dequeueOutboxItem(id);
         void persistDeliveredMessage(contact.roomId, { ...newMessage, status: "sent" });
       } catch (err) {
         setMessageStatus(contact.conversationKey, id, "failed");
+        setAttachmentTransfer(id, {
+          direction: "upload",
+          fileName: file.name,
+          phase: "error",
+          progress: 0,
+          error: "Attachment queued. It will send automatically when connection is back.",
+        });
         enqueueOutboxItem({
           roomId: contact.roomId,
           payload: {
@@ -1260,7 +1418,20 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
         setError("Attachment queued. It will send automatically when connection is back.");
       }
     },
-    [contact, addMessage, persistDeliveredMessage, sendEncryptedPayload, setMessageStatus, currentMemberId, socialId, replyTarget]
+    [contact, addMessage, persistDeliveredMessage, sendEncryptedPayload, setAttachmentTransfer, setMessageStatus, currentMemberId, socialId, replyTarget]
+  );
+
+  const queueAttachments = useCallback(
+    (files: File[]) => {
+      files.forEach((file) => {
+        attachmentSendQueueRef.current = attachmentSendQueueRef.current
+          .catch(() => undefined)
+          .then(async () => {
+            await sendAttachment(file);
+          });
+      });
+    },
+    [sendAttachment]
   );
 
   const deleteMessageEverywhere = useCallback(
@@ -1525,6 +1696,7 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
         ) : (
           <div className="space-y-4">
             {messages.map((m) => {
+              const attachmentTransfer = attachmentTransfers[m.id];
               const participantAlias = m.senderMemberId
                 ? senderAliasByMemberId.get(m.senderMemberId)
                 : undefined;
@@ -1630,12 +1802,29 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
                     ) : m.kind === "file" ? (
                       <div className="space-y-2">
                         <div className="text-xs opacity-80">{m.fileName || "Encrypted attachment"}</div>
+                        {attachmentTransfer ? (
+                          <div className="space-y-1">
+                            <div className={`text-[10px] ${attachmentTransfer.phase === "error" ? "text-red-500" : "opacity-80"}`}>
+                              {formatAttachmentTransferLabel(attachmentTransfer)}
+                            </div>
+                            {attachmentTransfer.phase !== "encrypting" && attachmentTransfer.phase !== "decrypting" && attachmentTransfer.phase !== "error" ? (
+                              <div className="h-1.5 w-full overflow-hidden border border-[var(--color-border)] bg-[var(--color-bg)]">
+                                <div
+                                  className="h-full bg-[var(--color-fg-primary)] transition-all"
+                                  style={{ width: `${Math.max(8, attachmentTransfer.progress)}%` }}
+                                />
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
                         <button
                           onClick={() => void downloadAttachment(m)}
                           className="text-xs underline"
-                          disabled={!m.attachmentId || !m.wrappedFileKey}
+                          disabled={!m.attachmentId || !m.wrappedFileKey || attachmentTransfer?.phase === "downloading" || attachmentTransfer?.phase === "decrypting"}
                         >
-                          Decrypt and download
+                          {attachmentTransfer?.direction === "download" && attachmentTransfer.phase !== "error"
+                            ? formatAttachmentTransferLabel(attachmentTransfer)
+                            : "Decrypt and download"}
                         </button>
                       </div>
                     ) : m.kind === "system" ? (
@@ -1727,10 +1916,13 @@ export function ChatPanel({ embedded = false }: { embedded?: boolean }) {
           <input
             ref={fileInputRef}
             type="file"
+            multiple
             className="hidden"
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void sendAttachment(file);
+              const files = Array.from(e.target.files ?? []);
+              if (files.length > 0) {
+                queueAttachments(files);
+              }
               e.currentTarget.value = "";
             }}
           />
